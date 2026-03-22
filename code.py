@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.10  (2026-03-16)
+# Version : 1.12  (2026-03-22)
 # Author  : Spencer Webb
 # License : MIT
 #
@@ -56,11 +56,15 @@
 #   y=  5-95  Large 7-segment HH:MM:SS digits
 #   y=111     Zone + sync status at scale 1 — e.g. "UTC-5  NTP SYNC OK  14:23:05"
 #             or "UTC-5  NTP SYNC FAIL  (OK 14:23:05)" when last attempt failed
-#   y=128     Status bar — sync countdown | drift | NTP ping
+#   y=128     Status bar — sync countdown | NTP ping
 #
-# Display layout (status bar hidden, D2 toggled off):
+# Display layout (status bar hidden, D2 short press):
 #   y=  5-95  Large 7-segment HH:MM:SS digits
 #   y=115     Timezone label grows to scale 3, centered in freed space
+#
+# Display layout (brightness adjust mode, D2 hold):
+#   y=  5-95  All segments lit (lamp test) at current brightness level
+#   y=111     "Brightness:  XX%" at scale 2
 #
 # Button functions (D0 is BOOT button, active LOW; D1/D2 active HIGH):
 #   D0 short press  — cycle display color (Green / Red / Blue)
@@ -68,6 +72,9 @@
 #   D0 short press  — dismiss info screen and return to clock
 #   D1 short press  — advance to next timezone
 #   D2 short press  — toggle status bar; zone label resizes and shows sync status
+#   D2 hold 0.5s    — enter brightness adjustment mode
+#     D2 short press  — cycle through brightness levels (10/25/50/75/100%)
+#     D2 hold 0.5s    — exit brightness adjustment, restore prior display state
 #
 # Required libraries in /lib on CIRCUITPY:
 #   adafruit_display_text, adafruit_max1704x, webb_ntp
@@ -101,7 +108,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.10"   # shown on the info screen
+VERSION = "1.12"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -110,20 +117,36 @@ WIFI_SSID         = os.getenv("WIFI_SSID")
 WIFI_PASSWORD     = os.getenv("WIFI_PASSWORD")
 NTP_SERVER        = os.getenv("NTP_SERVER",        "pool.ntp.org")
 NTP_SYNC_INTERVAL = int(os.getenv("NTP_SYNC_INTERVAL", "3600"))  # seconds between syncs
-NTP_SYNC_FUZZ     = int(os.getenv("NTP_SYNC_FUZZ",     "0"))    # max random offset +/- applied to sync interval
+NTP_SYNC_FUZZ     = int(os.getenv("NTP_SYNC_FUZZ",     "0"))    # max random +/- offset on sync interval
 NTP_RETRY_BASE    = 5     # seconds before first retry after a failed sync
 NTP_RETRY_MAX     = 300   # cap on retry backoff (5 minutes)
 TIME_FORMAT       = int(os.getenv("TIME_FORMAT",       "24"))    # 12 or 24
 DEBUG             = int(os.getenv("DEBUG",             "0"))     # 1 = verbose serial output
 BRIGHTNESS        = float(os.getenv("BRIGHTNESS",     "1.0"))   # backlight level 0.0-1.0
 INFO_BRIGHTNESS   = float(os.getenv("INFO_BRIGHTNESS", "1.0"))  # status bar text 0.0-1.0
-SHOW_DRIFT        = int(os.getenv("SHOW_DRIFT",        "1"))     # 1 = show drift label
 DEFAULT_TZ_OFFSET = int(os.getenv("DEFAULT_TZ_OFFSET", "0")) * 60  # hours -> minutes
 
 # Status bar text color: a neutral grey scaled by INFO_BRIGHTNESS.
 # This lets the status bar be dimmed independently of the backlight.
 _ib        = max(0, min(255, int(INFO_BRIGHTNESS * 255)))
 INFO_COLOR = (_ib << 16) | (_ib << 8) | _ib
+
+# ---------------------------------------------------------------------------
+# Brightness adjustment levels — cycled by D2 short press during adjustment.
+# Expressed as fractions (0.0-1.0) matching display.brightness units.
+# The startup level is the entry in this tuple closest to BRIGHTNESS.
+# ---------------------------------------------------------------------------
+BRIGHTNESS_LEVELS = (0.10, 0.25, 0.50, 0.75, 1.00)
+
+def _closest_brightness_index(value):
+    """Return the index in BRIGHTNESS_LEVELS nearest to value."""
+    best = 0
+    for i, lvl in enumerate(BRIGHTNESS_LEVELS):
+        if abs(lvl - value) < abs(BRIGHTNESS_LEVELS[best] - value):
+            best = i
+    return best
+
+brightness_index = _closest_brightness_index(BRIGHTNESS)
 
 # ---------------------------------------------------------------------------
 # Timezone table
@@ -204,20 +227,15 @@ color_scheme_index = 0
 #  LEFT = left margin
 #  TOP  = top margin
 #
-# Layout is designed to fill the full 240px width with equal spacing everywhere:
+# Layout fills the full 240px width with equal spacing everywhere:
 #   A GAP of 6px separates every adjacent element — digit↔digit, digit↔colon,
 #   and colon↔digit — giving visually centred colons.
 #   Total = 6*DW + 7*GAP + 2*CW + 2*LEFT
 #         = 6*28 + 7*6  + 2*8  + 2*7 = 168+42+16+14 = 240px
 #
-#  UTC_Y       = zone label vertical centre when status bar is visible (scale 1)
-#  UTC_Y_LARGE = zone label vertical centre when status bar is hidden  (scale 3)
+#  UTC_Y       = zone label vertical centre when status bar is visible
+#  UTC_Y_LARGE = zone label vertical centre when status bar is hidden (scale 3)
 #  INFO_Y      = status bar vertical centre
-#
-# Zone label geometry:
-#   scale 1: font 12px tall, centered at UTC_Y=111
-#   scale 3: font 36px tall, centered at UTC_Y_LARGE=115 (top=97, bottom=133)
-#   Both fit in the 40px gap between digit bottom (y=95) and display edge (y=135)
 # ---------------------------------------------------------------------------
 DW          = 28
 DH          = 90
@@ -226,8 +244,8 @@ GAP         = 6    # spacing between every adjacent element (digit↔digit, digi
 CW          = 8    # colon column width
 LEFT        = 7    # left margin (= right margin for symmetry)
 TOP         = 5
-UTC_Y       = 111   # zone label centre, status bar visible, scale=1
-UTC_Y_LARGE = 115   # zone label centre, status bar hidden,  scale=3
+UTC_Y       = 111   # zone label centre, status bar visible
+UTC_Y_LARGE = 115   # zone label centre, status bar hidden, scale=3
 INFO_Y      = 128   # status bar centre
 
 # Segment rectangles as (x, y, w, h) relative to each digit's top-left corner.
@@ -264,12 +282,11 @@ DIGIT_SEGS = [
 SEGS = _seg_rects(DW, DH, ST)
 
 # Precomputed left-edge x positions for each of the six digit slots (0-1=HH, 2-3=MM, 4-5=SS).
-# Each colon column is CW wide; a full GAP is added after each colon so the
-# spacing is symmetric on both sides of every colon.
+# A full GAP is added after each colon so spacing is symmetric on both sides.
 DIGIT_X = [
     LEFT,
     LEFT +   DW + GAP,
-    LEFT + 2*(DW + GAP) +     (CW + GAP),   # GAP after each colon matches GAP before
+    LEFT + 2*(DW + GAP) +     (CW + GAP),
     LEFT + 3*(DW + GAP) +     (CW + GAP),
     LEFT + 4*(DW + GAP) + 2 * (CW + GAP),
     LEFT + 5*(DW + GAP) + 2 * (CW + GAP),
@@ -277,8 +294,8 @@ DIGIT_X = [
 
 # Precomputed left-edge x positions for the two colons
 COLON_X = [
-    LEFT + 2*(DW + GAP),                  # between HH and MM
-    LEFT + 4*(DW + GAP) + (CW + GAP),    # between MM and SS (accounts for gap after first colon)
+    LEFT + 2*(DW + GAP),               # between HH and MM
+    LEFT + 4*(DW + GAP) + (CW + GAP), # between MM and SS
 ]
 
 # ---------------------------------------------------------------------------
@@ -310,8 +327,8 @@ display.root_group = group
 
 # -- Status bar labels (bottom row) ------------------------------------------
 # Strings are padded to a consistent width to avoid repeated heap allocation
-# as the label's internal bitmap resizes.  Format specs:
-#   sync_label : "Sync NNNNs" — 4-digit field keeps width stable from 1s-9999s
+# as the label's internal bitmap resizes.
+#   sync_label : "Sync NNNNs" — 4-digit field covers 1s-9999s
 #   ping_label : "Ping NNNNms" — 4-digit field covers 1ms-9999ms
 sync_label = label.Label(terminalio.FONT, text="", color=INFO_COLOR, scale=1)
 sync_label.anchor_point      = (0.0, 0.5)
@@ -323,28 +340,16 @@ ping_label.anchor_point      = (1.0, 0.5)
 ping_label.anchored_position = (238, INFO_Y)
 group.append(ping_label)
 
-# Drift label starts with a placeholder; replaced after the first full-interval sync
-drift_label = label.Label(
-    terminalio.FONT,
-    text  = "Drift ---ms/h" if SHOW_DRIFT else "",
-    color = INFO_COLOR,
-    scale = 1,
-)
-drift_label.anchor_point      = (0.5, 0.5)
-drift_label.anchored_position = (120, INFO_Y)
-group.append(drift_label)
-
-# -- Timezone / sync-status label --------------------------------------------
-# Two display modes controlled by _update_zone_label():
-#   Status bar visible (info_visible=True):
-#     scale=1, combined text: "UTC-5  NTP SYNC OK  14:23:05"
-#                          or "UTC-5  NTP SYNC FAIL  (OK 14:23:05)"
-#   Status bar hidden (info_visible=False):
-#     scale=3, timezone only, centered in the freed space below the digits
+# -- Timezone / sync-status / brightness label -------------------------------
+# This label serves three roles depending on display mode, all managed by
+# _update_zone_label():
+#   Normal, status bar visible : scale=1, "UTC-5  NTP SYNC OK  14:23:05"
+#   Normal, status bar hidden  : scale=3, "UTC-5" centered in freed space
+#   Brightness adjust mode     : scale=2, "Brightness:  XX%"
 zone_label = label.Label(
     terminalio.FONT,
     text  = TIMEZONES[tz_index][1],
-    color = COLOR_SCHEMES[0][0],  # matches palette[1] at startup
+    color = COLOR_SCHEMES[0][0],
     scale = 1,
 )
 zone_label.anchor_point      = (0.5, 0.5)
@@ -359,7 +364,7 @@ error_label.anchored_position = (120, 67)
 group.append(error_label)
 
 # ---------------------------------------------------------------------------
-# Info screen — triggered by holding D0, dismissed by a subsequent short press
+# Info screen — triggered by holding D0, dismissed by a subsequent short press.
 # Uses a separate displayio Group; switching screens is a single assignment to
 # display.root_group.  Shares the same palette as the clock face for the
 # background bitmap (index 0 = black).
@@ -393,7 +398,7 @@ info_mac_lbl    = _make_info_label(_y); info_group.append(info_mac_lbl);    _y +
 info_batt_lbl   = _make_info_label(_y); info_group.append(info_batt_lbl);   _y += _INFO_LINE_H
 info_mem_lbl    = _make_info_label(_y); info_group.append(info_mem_lbl);    _y += _INFO_LINE_H
 info_uptime_lbl = _make_info_label(_y); info_group.append(info_uptime_lbl)
-del _y  # finished layout; clean up the temp variable
+del _y
 
 # Tuple of all info screen labels whose .color must track the active color scheme
 INFO_LABELS = (
@@ -415,13 +420,22 @@ btn_d1.switch_to_input(pull=digitalio.Pull.DOWN)
 btn_d2 = digitalio.DigitalInOut(board.D2)
 btn_d2.switch_to_input(pull=digitalio.Pull.DOWN)
 
-HOLD_THRESHOLD     = 0.5   # seconds D0 must be held to open the info screen
-info_visible       = True  # whether the status bar labels are currently shown
-info_screen_active = False # whether the info screen is the active root_group
-btn_d0_last        = True  # D0 rests HIGH (not pressed)
-btn_d0_held_since  = None  # monotonic time of last D0 press, or None
+HOLD_THRESHOLD     = 0.5   # seconds a button must be held to trigger hold action
+
+# D0 state
+info_screen_active = False  # True while the full-screen info overlay is shown
+btn_d0_last        = True   # D0 rests HIGH (not pressed)
+btn_d0_held_since  = None
+
+# D1 state
 btn_d1_last        = False
-btn_d2_last        = False
+
+# D2 state
+info_visible           = True   # whether the status bar is currently shown
+brightness_adjust_active = False  # True while in brightness adjustment mode
+info_visible_saved     = True   # info_visible state saved on entering brightness adjust
+btn_d2_last            = False
+btn_d2_held_since      = None
 
 # Sync status — updated by sync_ntp() on every attempt.
 # last_sync_ok_hms is recorded in local timezone.
@@ -448,15 +462,20 @@ def _draw_colon(ox, oy):
     _fill_rect(cx, oy +     DH // 3 - dot // 2, dot, dot, 1)
     _fill_rect(cx, oy + 2 * DH // 3 - dot // 2, dot, dot, 1)
 
+def _draw_lamp_test():
+    """Light all segments on all six digit slots (digit 8 = all segments on).
+    Used at startup and during brightness adjustment as a full-load display reference.
+    """
+    for i in range(6):
+        _draw_digit(8, DIGIT_X[i], TOP)
+
 # Colons are static — draw them once at startup, never touch them again
 _draw_colon(COLON_X[0], TOP)
 _draw_colon(COLON_X[1], TOP)
 
-# Lamp test — light all segments on every digit while waiting for the first NTP sync.
-# draw_time() will overwrite these naturally once we have a valid time.
-for _lamp_i in range(6):
-    _draw_digit(8, DIGIT_X[_lamp_i], TOP)
-del _lamp_i
+# Lamp test at startup — all segments on while waiting for the first NTP sync.
+# draw_time() overwrites these naturally once we have a valid time.
+_draw_lamp_test()
 
 # Per-slot cache of the last drawn digit value; -1 means "not yet drawn"
 _last_digits = [-1, -1, -1, -1, -1, -1]
@@ -492,15 +511,31 @@ def apply_color_scheme():
 def _update_zone_label():
     """Rebuild zone_label text, scale, and position to match current state.
 
+    Three modes:
+
+    Brightness adjust (brightness_adjust_active=True):
+        scale=2, shows current brightness percentage centered at UTC_Y.
+        This gives a clear readout while the digit display acts as the
+        full-load brightness reference.
+
     Status bar visible (info_visible=True):
         scale=1, timezone + NTP sync status on one line:
           "UTC-5  NTP SYNC OK  14:23:05"
           "UTC-5  NTP SYNC FAIL  (OK 14:23:05)"
+
     Status bar hidden (info_visible=False):
         scale=3, timezone only, centered in the freed space below the digits.
 
-    Called after any sync attempt, timezone change, or D2 toggle.
+    Called after any sync attempt, timezone change, D2 toggle, or brightness
+    level change.
     """
+    if brightness_adjust_active:
+        pct = int(BRIGHTNESS_LEVELS[brightness_index] * 100)
+        zone_label.text              = "Brightness:  {}%".format(pct)
+        zone_label.scale             = 2
+        zone_label.anchored_position = (120, UTC_Y)
+        return
+
     tz_str = TIMEZONES[tz_index][1]
     if info_visible:
         if last_sync_ok:
@@ -519,6 +554,40 @@ def show_error(msg):
     if DEBUG: print("Error:", msg)
     error_label.text   = msg
     error_label.hidden = False
+
+# ---------------------------------------------------------------------------
+# Brightness adjustment helpers
+# ---------------------------------------------------------------------------
+def _enter_brightness_adjust():
+    """Enter brightness adjustment mode.
+
+    Saves the current info_visible state, hides the status bar, draws the
+    lamp test so all segments are lit as a brightness reference, and shows
+    the current brightness percentage in the zone label area.
+    """
+    global brightness_adjust_active, info_visible_saved
+    info_visible_saved       = info_visible
+    brightness_adjust_active = True
+    sync_label.hidden        = True
+    ping_label.hidden        = True
+    _draw_lamp_test()
+    _last_digits[:] = [-1] * 6   # mark digits as needing redraw when we exit
+    _update_zone_label()
+
+def _exit_brightness_adjust():
+    """Exit brightness adjustment mode and restore the prior display state."""
+    global brightness_adjust_active, info_visible, last_second
+    brightness_adjust_active = False
+    info_visible             = info_visible_saved
+    sync_label.hidden        = not info_visible
+    ping_label.hidden        = not info_visible
+    last_second              = -1   # force full clock redraw on next loop tick
+    _update_zone_label()
+
+def _apply_brightness():
+    """Apply the current brightness_index level to the display and update the label."""
+    display.brightness = BRIGHTNESS_LEVELS[brightness_index]
+    _update_zone_label()
 
 # ---------------------------------------------------------------------------
 # Info screen helpers
@@ -545,7 +614,8 @@ def show_info_screen(mono):
 
     info_title_lbl.text  = "-- System Info v{} --".format(VERSION)
     info_ntp_lbl.text    = "NTP:  " + NTP_SERVER
-    info_fuzz_lbl.text   = "Interval: {}sec.  Fuzz: +/-{}sec.".format(NTP_SYNC_INTERVAL, NTP_SYNC_FUZZ)
+    info_fuzz_lbl.text   = "Interval: {}sec.  Fuzz: +/-{}sec.".format(
+                               NTP_SYNC_INTERVAL, NTP_SYNC_FUZZ)
     info_ssid_lbl.text   = "WiFi: " + (WIFI_SSID or "?")
     info_ip_lbl.text     = "IP:   " + ip
     info_mac_lbl.text    = "MAC:  " + mac
@@ -578,10 +648,7 @@ def _next_sync_time(mono):
     The result is clamped so it is never in the past — the next attempt is
     always at least one second from now regardless of the fuzz value.
     """
-    if NTP_SYNC_FUZZ > 0:
-        offset = random.uniform(-NTP_SYNC_FUZZ, NTP_SYNC_FUZZ)
-    else:
-        offset = 0
+    offset = random.uniform(-NTP_SYNC_FUZZ, NTP_SYNC_FUZZ) if NTP_SYNC_FUZZ > 0 else 0
     return mono + max(1, NTP_SYNC_INTERVAL + offset)
 
 # ---------------------------------------------------------------------------
@@ -640,11 +707,6 @@ sync_m       = 0
 sync_s       = 0
 sync_mono_ns = 0   # integer nanosecond anchor for the above H:M:S
 
-# Drift state — valid only after two syncs separated by at least NTP_SYNC_INTERVAL.
-# Stored in ms to keep the drift arithmetic straightforward.
-prev_sync_ntp_ms  = 0.0   # NTP wall-clock time (ms since midnight) at previous sync
-prev_sync_mono_ns = 0     # monotonic_ns value at previous sync (integer)
-
 def sync_ntp():
     """Fetch UTC from the NTP server and update the software clock.
 
@@ -659,7 +721,6 @@ def sync_ntp():
     Returns True on success, False on any error.
     """
     global sync_h, sync_m, sync_s, sync_mono_ns
-    global prev_sync_ntp_ms, prev_sync_mono_ns
     global last_sync_ok, last_sync_ok_hms
 
     if DEBUG: print("Syncing NTP...")
@@ -686,28 +747,6 @@ def sync_ntp():
         _loc  = (_utc + TIMEZONES[tz_index][0] * 60) % 86400
         last_sync_ok_hms = "{:02d}:{:02d}:{:02d}".format(
             _loc // 3600, (_loc % 3600) // 60, _loc % 60)
-
-        # Drift: measure how much the software clock gained or lost vs NTP.
-        # Requires two syncs at least 90% of NTP_SYNC_INTERVAL apart to avoid
-        # noise from retries or closely-spaced syncs.
-        # Using integer ns for elapsed time gives exact arithmetic.
-        ntp_ms_now             = (sync_h * 3600 + sync_m * 60 + sync_s) * 1000.0 + remain_ms
-        elapsed_between_syncs_ns = sync_mono_ns - prev_sync_mono_ns
-        elapsed_between_syncs_s  = elapsed_between_syncs_ns / 1_000_000_000.0
-        if prev_sync_ntp_ms > 0.0 and elapsed_between_syncs_s >= NTP_SYNC_INTERVAL * 0.9:
-            sw_elapsed_ms  = elapsed_between_syncs_ns / 1_000_000.0  # exact integer→float
-            ntp_elapsed_ms = ntp_ms_now - prev_sync_ntp_ms
-            if ntp_elapsed_ms < 0:
-                ntp_elapsed_ms += 86400000.0   # midnight rollover
-            if ntp_elapsed_ms > 0:
-                # Drift in ms per hour: error fraction scaled to one hour
-                drift = (sw_elapsed_ms - ntp_elapsed_ms) / ntp_elapsed_ms * 3600000.0
-                if SHOW_DRIFT:
-                    drift_label.text = "Drift {:+.1f}ms/h".format(drift)
-                if DEBUG: print("Drift: {:+.1f}ms/h".format(drift))
-
-        prev_sync_ntp_ms  = ntp_ms_now
-        prev_sync_mono_ns = sync_mono_ns
 
         if DEBUG: print("Synced. rtt={}ms frac={}ms".format(int(rtt_ms), int(frac_ms)))
         return True
@@ -767,18 +806,21 @@ while True:
         ok = sync_ntp()
         if ok:
             have_time    = True
-            retry_s      = NTP_RETRY_BASE          # reset backoff on success
+            retry_s      = NTP_RETRY_BASE
             next_ntp_try = _next_sync_time(mono)
             error_label.hidden = True
         else:
             # Keep the software clock running on the last good fix.
-            # Schedule a retry with exponential backoff, capped at NTP_RETRY_MAX.
+            # Schedule retry with exponential backoff, capped at NTP_RETRY_MAX.
             next_ntp_try = mono + retry_s
             retry_s      = min(retry_s * 2, NTP_RETRY_MAX)
-        _update_zone_label()
+        # Only update zone label if not in brightness adjust (which manages its own label)
+        if not brightness_adjust_active:
+            _update_zone_label()
 
-    # --- Clock display (skipped while info screen is visible) ---------------
-    if have_time and not info_screen_active:
+    # --- Clock display ------------------------------------------------------
+    # Skipped while the info screen overlay or brightness adjustment is active.
+    if have_time and not info_screen_active and not brightness_adjust_active:
         h, m, s = current_time(mono_ns)   # integer ns path — exact at any uptime
         if s != last_second:
             last_second = s
@@ -796,24 +838,24 @@ while True:
     #   Quick press normally -> advance color scheme
     btn_d0_now = btn_d0.value
     if not btn_d0_now and btn_d0_last:
-        # Falling edge — button just pressed; start timing the hold
+        # Falling edge — D0 signal went HIGH→LOW, button just pressed; start hold timer
         btn_d0_held_since = mono
     elif not btn_d0_now and not btn_d0_last:
-        # Still held — open info screen once threshold is crossed
+        # Still held — trigger info screen once hold threshold is reached
         if btn_d0_held_since is not None and not info_screen_active:
             if mono - btn_d0_held_since >= HOLD_THRESHOLD:
                 show_info_screen(mono)
-                btn_d0_held_since = None  # prevent re-triggering on continued hold
+                btn_d0_held_since = None  # clear so release does nothing extra
     elif btn_d0_now and not btn_d0_last:
-        # Rising edge — button released
+        # Rising edge — D0 signal went LOW→HIGH, button just released
         if btn_d0_held_since is not None:
-            # Released before threshold: treat as a quick press
+            # held_since is set: released before hold threshold — treat as quick press
             if info_screen_active:
                 hide_info_screen()
             else:
                 color_scheme_index = (color_scheme_index + 1) % len(COLOR_SCHEMES)
                 apply_color_scheme()
-        # If held_since is None, the hold already fired; do nothing on release.
+        # If held_since is None the hold already fired — do nothing on release
         btn_d0_held_since = None
     btn_d0_last = btn_d0_now
 
@@ -821,21 +863,47 @@ while True:
     btn_d1_now = btn_d1.value
     if btn_d1_now and not btn_d1_last:
         tz_index    = (tz_index + 1) % len(TIMEZONES)
-        last_second = -1   # force draw_time() to run on next loop tick
+        last_second = -1   # invalidate cache so draw_time() runs immediately with new offset
         _update_zone_label()
     btn_d1_last = btn_d1_now
 
-    # --- D2: toggle status bar; resize zone label to use freed space --------
-    # When the status bar is hidden the zone label grows from scale 1 to scale 3
-    # and recenters at UTC_Y_LARGE to fill the space between the digits and the
-    # bottom of the display.  Reversing the toggle restores the original layout.
+    # --- D2: hold = brightness adjust, quick press = toggle status bar ------
+    # Pull.DOWN: resting state False (LOW), pressed True (HIGH)
+    #
+    # State machine (mirrors D0):
+    #   Not in brightness adjust:
+    #     Press & hold (>HOLD_THRESHOLD) -> enter brightness adjustment
+    #     Quick press -> toggle status bar visibility
+    #   In brightness adjust:
+    #     Press & hold (>HOLD_THRESHOLD) -> exit brightness adjustment
+    #     Quick press -> cycle to next brightness level
     btn_d2_now = btn_d2.value
     if btn_d2_now and not btn_d2_last:
-        info_visible       = not info_visible
-        sync_label.hidden  = not info_visible
-        ping_label.hidden  = not info_visible
-        drift_label.hidden = not info_visible
-        _update_zone_label()
+        # Rising edge — D2 signal went LOW→HIGH (active high), button just pressed; start hold timer
+        btn_d2_held_since = mono
+    elif btn_d2_now and btn_d2_last:
+        # Still held — trigger hold action once threshold is reached
+        if btn_d2_held_since is not None:
+            if mono - btn_d2_held_since >= HOLD_THRESHOLD:
+                if brightness_adjust_active:
+                    _exit_brightness_adjust()   # hold while in adjust = exit
+                else:
+                    _enter_brightness_adjust()  # hold normally = enter adjust
+                btn_d2_held_since = None  # clear so release does nothing extra
+    elif not btn_d2_now and btn_d2_last:
+        # Falling edge — D2 signal went HIGH→LOW, button just released
+        if btn_d2_held_since is not None:
+            # held_since is set: released before hold threshold — treat as quick press
+            if brightness_adjust_active:
+                brightness_index = (brightness_index + 1) % len(BRIGHTNESS_LEVELS)
+                _apply_brightness()             # cycle to next brightness level
+            else:
+                info_visible      = not info_visible
+                sync_label.hidden = not info_visible
+                ping_label.hidden = not info_visible
+                _update_zone_label()            # toggle status bar visibility
+        # If held_since is None the hold already fired — do nothing on release
+        btn_d2_held_since = None
     btn_d2_last = btn_d2_now
 
     time.sleep(0.02)  # ~50 Hz — responsive to buttons, easy on the CPU

@@ -1,4 +1,4 @@
-webb-clock v1.10
+webb-clock v1.12
 
 
 Hardware requirements:  Adafruit ESP32-S3 REV TFT
@@ -21,7 +21,7 @@ A short press on D0 will change the color of the clock display.  It will cycle f
 
 D1 will cycle through the available time zones.  All are simply labelled with the difference from Coordinated Universal Time (UTC).
 
-D2 will cycle the display between having some status information or just having the time zone below the clock.  It will show the status of the NTP sync, and the time it was accomplished.  It also shows the time to next sync, the drift of the ESP32 oscillator, and the ping time to the NTP Server.  Choosing to have just the time zone results in a nice, clean display.
+D2 will cycle the display between having some status information or just having the time zone below the clock.  It will show the status of the NTP sync, and the time it was accomplished.  It also shows the time to next sync, and the ping time to the NTP Server.  Choosing to have just the time zone results in a nice, clean display.  A long press on D2 will initiate display brightness mode.  It will cycle through four levels.  Another long press returns to clock mode.
 
 I hope you enjoy this simple, yet strangely accurate clock.
 
