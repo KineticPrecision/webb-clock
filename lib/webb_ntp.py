@@ -2,8 +2,8 @@
 # webb_ntp.py
 # Custom NTP client for CircuitPython with sub-second timestamp precision.
 #
-# Version : 0.2
-# Author  : Webb
+# Version : 1.0  (2026-03-22)
+# Author  : Spencer Webb
 # License : MIT
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -52,7 +52,7 @@
 #   Bytes 32-39  : Receive Timestamp (NTP 64-bit)
 #   Bytes 40-47  : Transmit Timestamp (NTP 64-bit)  <-- we use this one
 #
-# Each NTP 64-bit timestamp = 32-bit seconds | 32-bit fraction
+# Each NTP 64-bit timestamp = 32-bit seconds | 32-bit fraction.
 # Fraction field value / 2^32 = sub-second part in seconds.
 #
 # NTP epoch : January 1, 1900
@@ -70,11 +70,14 @@ _FRAC_TO_MS      = 1000.0 / 4294967296.0  # converts 32-bit NTP fraction field t
 
 # True if this CircuitPython build supports time.monotonic_ns().
 # Evaluated once at import time — the result never changes at runtime.
+# monotonic_ns() returns a Python integer so RTT arithmetic is exact;
+# monotonic() returns a 32-bit float whose resolution degrades at high uptime.
 _USE_NS = hasattr(time, "monotonic_ns")
 
 # Cached DNS result: (server_str, sockaddr) from the last successful lookup.
-# Avoids a DNS round-trip on every sync.  Invalidated automatically when the
-# server argument changes, so a different hostname always triggers a fresh lookup.
+# Avoids a DNS round-trip on every sync call.  Invalidated automatically when
+# the server argument changes, so a different hostname always triggers a fresh
+# lookup.
 _dns_cache = None   # None, or (server_str, sockaddr)
 
 
@@ -82,18 +85,24 @@ def get_time(pool, server):
     """Query an NTP server and return the current UTC time with sub-second precision.
 
     Sends a single NTPv4 client request, validates the response, and returns
-    the server's Transmit Timestamp (T3) together with the measured RTT.
-    The caller is expected to apply the half-RTT correction:
+    the server's Transmit Timestamp (T3) together with the measured round-trip
+    time.  The caller is expected to apply the half-RTT correction:
         true_time_ms = unix_seconds * 1000 + frac_ms + rtt_ms / 2
 
-    DNS resolution is cached after the first call and reused until the server
-    argument changes.
+    DNS resolution is cached after the first successful call and reused until
+    the server argument changes.
 
     RTT is measured with time.monotonic_ns() when available (integer nanoseconds,
     no float rounding) and falls back to time.monotonic() on older builds.
 
-    Note: recvfrom_into() is not used for sender verification as it is not
+    The socket is always created as AF_INET/SOCK_DGRAM regardless of what
+    getaddrinfo returns — passing the raw family/socktype integers back into
+    pool.socket() is unreliable on CircuitPython's socketpool implementation.
+
+    Note: recvfrom_into() is not used for sender verification because it is not
     reliably supported across all CircuitPython socketpool implementations.
+    recv_into() is used instead; stray UDP packets are therefore not filtered,
+    but in practice this is not an issue on a typical home network.
 
     Args:
         pool:   A CircuitPython socketpool.SocketPool instance.
@@ -111,9 +120,6 @@ def get_time(pool, server):
     global _dns_cache
 
     # --- DNS lookup (cached) ------------------------------------------------
-    # The socket is always AF_INET/SOCK_DGRAM regardless of what getaddrinfo
-    # returns — passing the raw family/socktype integers back into pool.socket()
-    # is unreliable on CircuitPython's socketpool implementation.
     if _dns_cache is None or _dns_cache[0] != server:
         addr       = pool.getaddrinfo(server, _NTP_PORT)[0][4]
         _dns_cache = (server, addr)
@@ -127,20 +133,22 @@ def get_time(pool, server):
     packet[0] = 0b00100011
 
     # --- Send, receive, and measure RTT -------------------------------------
-    # The timing brackets wrap only the network calls so the RTT reflects
-    # actual wire time as closely as possible.
+    # sock.settimeout() is inside the try block so the socket is guaranteed to
+    # be closed by the finally clause even if settimeout() raises.
+    # The timing brackets wrap only the network calls so RTT reflects actual
+    # wire time as closely as possible.
     sock = pool.socket(pool.AF_INET, pool.SOCK_DGRAM)
-    sock.settimeout(_NTP_TIMEOUT)
     try:
+        sock.settimeout(_NTP_TIMEOUT)
         if _USE_NS:
             t0 = time.monotonic_ns()
             sock.sendto(packet, addr)
-            n  = sock.recv_into(packet)
+            n      = sock.recv_into(packet)
             rtt_ms = (time.monotonic_ns() - t0) / 1_000_000
         else:
             t0 = time.monotonic()
             sock.sendto(packet, addr)
-            n  = sock.recv_into(packet)
+            n      = sock.recv_into(packet)
             rtt_ms = (time.monotonic() - t0) * 1000.0
     finally:
         sock.close()
@@ -153,12 +161,14 @@ def get_time(pool, server):
     if (packet[0] & 0x07) != 4:
         raise OSError("Unexpected NTP mode: {}".format(packet[0] & 0x07))
 
-    # Stratum 0 is a kiss-o'-death or unspecified — not a usable time source
+    # Stratum 0 means kiss-o'-death or unspecified — not a usable time source
     if packet[1] == 0:
         raise OSError("NTP stratum 0 (kiss-o'-death) received")
 
     # --- Parse transmit timestamp (bytes 40-47) -----------------------------
-    # Both 32-bit words unpacked in a single call.
+    # Both 32-bit words are unpacked in a single call for efficiency.
+    # The transmit timestamp is the best available estimate of "what time is
+    # it now" — it is the moment the server finished composing its reply.
     ntp_seconds, ntp_fraction = struct.unpack_from("!II", packet, 40)
 
     unix_seconds = ntp_seconds - _NTP_EPOCH_DELTA
@@ -170,13 +180,19 @@ def get_time(pool, server):
 def unix_to_hms(unix_seconds):
     """Extract UTC hour, minute, and second from a Unix epoch timestamp.
 
+    Uses modulo 86400 (seconds per day) to isolate the time-of-day component.
+    This works correctly for any integer value of unix_seconds: positive values
+    give the correct UTC time, and Python's always-positive modulo means
+    negative values (timestamps before 1970) also produce a valid result rather
+    than wrapping unexpectedly.
+
     Args:
         unix_seconds (int): Seconds since January 1, 1970 UTC.
 
     Returns:
         Tuple of (hour, minute, second) as integers.
     """
-    total  = unix_seconds % 86400   # seconds elapsed so far today
+    total  = unix_seconds % 86400   # seconds elapsed so far today (0 – 86399)
     hour   = total // 3600
     minute = (total % 3600) // 60
     second = total % 60

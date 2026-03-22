@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.12  (2026-03-22)
+# Version : 1.13  (2026-03-22)
 # Author  : Spencer Webb
 # License : MIT
 #
@@ -66,6 +66,13 @@
 #   y=  5-95  All segments lit (lamp test) at current brightness level
 #   y=111     "Brightness:  XX%" at scale 2
 #
+# Display layout (NTP or WiFi error):
+#   y=  5-95  Clock digits dimmed to near-black; bright red error text
+#             overlaid across three word-wrapped lines at scale=2
+#             (display.brightness is NOT changed — only the palette dims)
+#   y=111     Zone label / sync status unchanged
+#   y=128     Status bar unchanged
+#
 # Button functions (D0 is BOOT button, active LOW; D1/D2 active HIGH):
 #   D0 short press  — cycle display color (Green / Red / Blue)
 #   D0 hold 0.5s    — show system info screen (stays on after release)
@@ -108,7 +115,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.12"   # shown on the info screen
+VERSION = "1.13"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -356,12 +363,25 @@ zone_label.anchor_point      = (0.5, 0.5)
 zone_label.anchored_position = (120, UTC_Y)
 group.append(zone_label)
 
-# -- Error label (centre screen, hidden until a fault occurs) ----------------
-error_label = label.Label(terminalio.FONT, text="", color=0xFF0000, scale=1)
-error_label.hidden            = True
-error_label.anchor_point      = (0.5, 0.5)
-error_label.anchored_position = (120, 67)
-group.append(error_label)
+# -- Error overlay labels — three lines of bright red text drawn directly over
+# the digit area (y=5-95).  On error the digit palette is dimmed to near-black
+# so the red text is clearly legible without touching display.brightness.
+# Three lines at scale=2 (24px tall each) fit comfortably in the 90px digit zone.
+# display.brightness is NOT changed — only the palette entries are dimmed.
+#   _err_lbl[0] : top of digit area    (y=20)
+#   _err_lbl[1] : middle of digit area (y=47)
+#   _err_lbl[2] : lower digit area     (y=74)
+_ERR_Y = (20, 47, 74)   # vertical centres for the three error overlay lines
+_err_lbl = []
+for _ey in _ERR_Y:
+    _el = label.Label(terminalio.FONT, text="", color=0xFF0000, scale=2)
+    _el.hidden            = True
+    _el.anchor_point      = (0.5, 0.5)
+    _el.anchored_position = (120, _ey)
+    group.append(_el)
+    _err_lbl.append(_el)
+_err_lbl = tuple(_err_lbl)
+del _ey, _el
 
 # ---------------------------------------------------------------------------
 # Info screen — triggered by holding D0, dismissed by a subsequent short press.
@@ -425,7 +445,7 @@ HOLD_THRESHOLD     = 0.5   # seconds a button must be held to trigger hold actio
 # D0 state
 info_screen_active = False  # True while the full-screen info overlay is shown
 btn_d0_last        = True   # D0 rests HIGH (not pressed)
-btn_d0_held_since  = None
+btn_d0_held_since  = None  # monotonic time D0 was pressed, or None if not pressed
 
 # D1 state
 btn_d1_last        = False
@@ -435,7 +455,7 @@ info_visible           = True   # whether the status bar is currently shown
 brightness_adjust_active = False  # True while in brightness adjustment mode
 info_visible_saved     = True   # info_visible state saved on entering brightness adjust
 btn_d2_last            = False
-btn_d2_held_since      = None
+btn_d2_held_since      = None  # monotonic time D2 was pressed, or None if not pressed
 
 # Sync status — updated by sync_ntp() on every attempt.
 # last_sync_ok_hms is recorded in local timezone.
@@ -530,7 +550,7 @@ def _update_zone_label():
     level change.
     """
     if brightness_adjust_active:
-        pct = int(BRIGHTNESS_LEVELS[brightness_index] * 100)
+        pct = round(BRIGHTNESS_LEVELS[brightness_index] * 100)
         zone_label.text              = "Brightness:  {}%".format(pct)
         zone_label.scale             = 2
         zone_label.anchored_position = (120, UTC_Y)
@@ -549,11 +569,64 @@ def _update_zone_label():
         zone_label.scale             = 3
         zone_label.anchored_position = (120, UTC_Y_LARGE)
 
+# Maximum characters per error line at scale=2.
+# terminalio.FONT glyphs are 6px wide; scale=2 → 12px per char.
+# 240px wide display with 4px margin each side → floor((240-8)/12) = 19 chars.
+_ERR_CHARS = 19
+
+def _wrap_error(msg):
+    """Word-wrap msg into a list of strings, each at most _ERR_CHARS wide.
+
+    Splits on spaces.  Words longer than _ERR_CHARS are placed alone on a line
+    and will be truncated by the display hardware rather than lost.
+    Returns exactly 3 strings (padded with "" if the message is short).
+    """
+    words  = msg.split()
+    lines  = []
+    current = ""
+    for word in words:
+        candidate = (current + " " + word).strip()
+        if len(candidate) <= _ERR_CHARS:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    # Pad to exactly 3 lines
+    while len(lines) < 3:
+        lines.append("")
+    return lines[:3]
+
 def show_error(msg):
-    """Show a red error message centred on the clock face."""
+    """Display a bright-red error message overlaid on the dimmed digit area.
+
+    Dims palette[1] and palette[2] to near-black so the digit bitmaps recede
+    without changing display.brightness (which would affect all other UI
+    elements).  The three overlay labels are word-wrapped and shown in bright
+    red at scale=2 directly over the digit area.
+
+    clear_error() reverses both the palette change and the label visibility.
+    """
     if DEBUG: print("Error:", msg)
-    error_label.text   = msg
-    error_label.hidden = False
+    # Dim the digit palette so segments recede into near-black
+    palette[1] = 0x080808
+    palette[2] = 0x000000
+    # Word-wrap and populate the three overlay labels
+    lines = _wrap_error(msg)
+    for i, lbl in enumerate(_err_lbl):
+        lbl.text   = lines[i]
+        lbl.hidden = False
+
+def clear_error():
+    """Hide the error overlay and restore the current color scheme palette."""
+    for lbl in _err_lbl:
+        lbl.hidden = True
+    # Restore palette from the current color scheme
+    on_color, off_color = COLOR_SCHEMES[color_scheme_index]
+    palette[1] = on_color
+    palette[2] = off_color
 
 # ---------------------------------------------------------------------------
 # Brightness adjustment helpers
@@ -571,7 +644,8 @@ def _enter_brightness_adjust():
     sync_label.hidden        = True
     ping_label.hidden        = True
     _draw_lamp_test()
-    _last_digits[:] = [-1] * 6   # mark digits as needing redraw when we exit
+    _last_digits[:] = [-1] * 6   # lamp test overwrites the bitmap; reset cache so
+                                  # draw_time() treats all slots as changed on next tick
     _update_zone_label()
 
 def _exit_brightness_adjust():
@@ -789,7 +863,7 @@ retry_s      = NTP_RETRY_BASE
 next_ntp_try = _next_sync_time(mono_now) if have_time else mono_now + retry_s
 
 if have_time:
-    error_label.hidden = True
+    clear_error()
 _update_zone_label()
 
 last_second = -1
@@ -808,7 +882,7 @@ while True:
             have_time    = True
             retry_s      = NTP_RETRY_BASE
             next_ntp_try = _next_sync_time(mono)
-            error_label.hidden = True
+            clear_error()
         else:
             # Keep the software clock running on the last good fix.
             # Schedule retry with exponential backoff, capped at NTP_RETRY_MAX.
