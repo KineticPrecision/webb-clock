@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.13
+ webb-clock  v1.14
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -38,7 +38,8 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       folder to the root of the CIRCUITPY drive.  The following libraries
       must be present:
         - adafruit_display_text
-        - adafruit_max1704x  (battery monitor; safe to omit if no battery)
+        - adafruit_max1704x  (battery monitor; required for battery level
+                              display, safe to omit if no battery is used)
 
   settings.toml
       User configuration file.  Must be edited before first use.
@@ -116,12 +117,16 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
     result of the last NTP sync attempt:
       "UTC-5  NTP SYNC OK  14:23:05"
       "UTC-5  NTP SYNC FAIL  (OK 14:23:05)"
-    The bottom status bar shows the time until the next sync on the left
-    and the last NTP round-trip (ping) time on the right.
+    The bottom status bar shows the time until the next sync on the left,
+    the battery level in the centre (if a battery is present), and the
+    last NTP round-trip (ping) time on the right.  The battery level is
+    updated once per minute.
 
   Clean mode (status bar hidden, D2 short press):
-    The status bar is hidden and the timezone label grows to fill the
-    freed space, giving a clean, uncluttered display.
+    The status bar is hidden.  If a battery is present, the timezone
+    label is shown left-justified and the battery percentage is shown
+    right-justified in the freed row, both at a larger size.  Without
+    a battery, the timezone label fills the full width at maximum size.
 
   Brightness adjust mode (D2 long press):
     All digit segments light up as a full-load brightness reference.
@@ -161,7 +166,8 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
 
   D2  (short press)
       Toggles the status bar on and off.  When off, the timezone label
-      enlarges to fill the space.
+      enlarges.  If a battery is present, the battery percentage is
+      shown alongside the timezone in the freed space.
 
   D2  (hold 0.5s)
       Enters brightness adjustment mode.  All digit segments light up as
