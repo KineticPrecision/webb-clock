@@ -139,7 +139,10 @@ NTP_RETRY_MAX     = 300   # cap on retry backoff (5 minutes)
 # if it was large the interval is shortened.  This trades off accuracy
 # against WiFi activity and battery consumption over time.
 #
-# NTP_ADAPT_THRESHOLD : correction below this (ms) is "good" → extend interval
+# NTP_ADAPT_THRESHOLD : centre of the correction dead band (ms)
+# NTP_ADAPT_BAND      : dead band half-width as % of threshold
+#                        lower = threshold*(1-band/100), upper = threshold*(1+band/100)
+#                        corrections inside the band → no action (prevents hunting)
 # NTP_ADAPT_STEP      : fractional adjustment per sync (0.20 = 20%)
 # NTP_INTERVAL_MIN    : floor on the adaptive interval (seconds)
 # NTP_INTERVAL_MAX    : ceiling on the adaptive interval (seconds)
@@ -149,8 +152,10 @@ NTP_RETRY_MAX     = 300   # cap on retry backoff (5 minutes)
 #
 # Note: fuzz is percentage-based (NTP_SYNC_FUZZ_PCT) rather than a fixed
 # number of seconds, so it scales correctly as the adaptive interval changes.
-NTP_ADAPT_THRESHOLD = 100    # ms
-NTP_ADAPT_STEP      = 0.20   # 20% per sync
+NTP_ADAPT_THRESHOLD = 100    # ms — centre of the dead band
+NTP_ADAPT_BAND      = 20     # % — dead band is +/- this % of threshold
+#                              e.g. threshold=100, band=20 → dead band 80-120ms
+NTP_ADAPT_STEP      = 0.20   # 20% interval adjustment per sync
 NTP_INTERVAL_MIN    = 300    # 5 minutes
 NTP_INTERVAL_MAX    = 7200   # 2 hours
 TIME_FORMAT       = int(os.getenv("TIME_FORMAT",       "24"))    # 12 or 24
@@ -1043,14 +1048,22 @@ while True:
             # A large correction means more drift occurred, so we sync sooner.
             # Skip adaptation on the first sync (no baseline correction available).
             if last_correction_ms is not None:
-                if last_correction_ms < NTP_ADAPT_THRESHOLD:
+                # Compute dead band bounds from threshold and band percentage.
+                # Corrections inside the band take no action, preventing the
+                # system from hunting around the threshold value.
+                _lower = NTP_ADAPT_THRESHOLD * (1 - NTP_ADAPT_BAND / 100.0)
+                _upper = NTP_ADAPT_THRESHOLD * (1 + NTP_ADAPT_BAND / 100.0)
+                if last_correction_ms < _lower:
+                    # Correction was small — oscillator ran well, extend interval
                     _adaptive_interval = min(
                         _adaptive_interval * (1 + NTP_ADAPT_STEP), NTP_INTERVAL_MAX)
-                else:
+                elif last_correction_ms > _upper:
+                    # Correction was large — too much drift, shorten interval
                     _adaptive_interval = max(
                         _adaptive_interval * (1 - NTP_ADAPT_STEP), NTP_INTERVAL_MIN)
-                if DEBUG: print("Adaptive interval: {:.0f}s correction: {:.1f}ms".format(
-                    _adaptive_interval, last_correction_ms))
+                # else: correction inside dead band — leave interval unchanged
+                if DEBUG: print("Adaptive interval: {:.0f}s correction: {:.1f}ms band: {:.0f}-{:.0f}ms".format(
+                    _adaptive_interval, last_correction_ms, _lower, _upper))
             next_ntp_try = _next_sync_time(mono)
         else:
             # Keep the software clock running on the last good fix.

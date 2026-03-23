@@ -204,18 +204,24 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   displayed time within roughly 150ms of true UTC at all times.
 
   Adaptive sync interval:
-  After each successful sync the clock measures how large the correction
-  was — the difference between what the software clock believed and what
-  NTP reported.  If the correction was small (under 100ms) the oscillator
-  ran well and the next sync interval is extended by 20%, saving battery.
-  If the correction was large the interval is shortened by 20% to keep
-  accuracy in check.  The interval is bounded between 5 minutes and
-  2 hours regardless of how consistently the oscillator performs.
+  After each successful sync the clock measures the correction — the
+  difference between what the software clock believed and what NTP
+  reported.  The correction is compared against a dead band centred on
+  NTP_ADAPT_THRESHOLD with a width of NTP_ADAPT_BAND percent:
+
+    Below dead band  (correction small)  → extend interval by 20%
+    Inside dead band (correction typical) → leave interval unchanged
+    Above dead band  (correction large)  → shorten interval by 20%
+
+  The dead band prevents the system from hunting — without it, a
+  correction consistently near the threshold would cause the interval
+  to oscillate up and down indefinitely.  With default settings
+  (threshold=100ms, band=20%) the dead band spans 80ms to 120ms.
+  The interval is bounded between 5 minutes and 2 hours.
   NTP_SYNC_INTERVAL in settings.toml is the starting point; the live
   (adapted) interval is shown on the System Info screen alongside it.
-  The fuzz (NTP_SYNC_FUZZ_PCT) is applied as a percentage of whatever
-  the current adaptive interval is, so it remains proportionate at all
-  times — no edge cases as the interval grows or shrinks.
+  The fuzz (NTP_SYNC_FUZZ_PCT) is applied as a percentage of the
+  current adaptive interval so it remains proportionate at all times.
 
 
 --------------------------------------------------------------------------------
