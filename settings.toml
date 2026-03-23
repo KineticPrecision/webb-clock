@@ -11,13 +11,15 @@ WIFI_PASSWORD = "your_password_here"
 NTP_SERVER = "pool.ntp.org"
 
 # How often to sync with NTP (seconds)
-NTP_SYNC_INTERVAL = "3600"  # 3600 seconds is one hour
+NTP_SYNC_INTERVAL = "3600"
 
-# Random fuzz applied to the sync interval (seconds).
-# The next sync is scheduled at NTP_SYNC_INTERVAL +/- a random value in this
-# range, preventing multiple devices from hitting the server in lockstep.
-# Set to 0 to disable fuzz (syncs at exact intervals).
-NTP_SYNC_FUZZ = "60"
+# Random fuzz applied to the sync interval, as a percentage of the interval.
+# The next sync is scheduled at the current interval +/- up to this percentage,
+# preventing multiple devices from hitting the server in lockstep (RFC 5905).
+# Using a percentage rather than a fixed number of seconds means the fuzz
+# scales correctly as the adaptive interval grows or shrinks.
+# Set to 0 to disable fuzz.  Default: 10 (10%).
+NTP_SYNC_FUZZ_PCT = "10"
 
 # Time format: 24 for 24-hour, 12 for 12-hour
 TIME_FORMAT = "24"

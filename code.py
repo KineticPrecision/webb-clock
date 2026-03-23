@@ -128,7 +128,7 @@ WIFI_SSID         = os.getenv("WIFI_SSID")
 WIFI_PASSWORD     = os.getenv("WIFI_PASSWORD")
 NTP_SERVER        = os.getenv("NTP_SERVER",        "pool.ntp.org")
 NTP_SYNC_INTERVAL = int(os.getenv("NTP_SYNC_INTERVAL", "3600"))  # seconds between syncs
-NTP_SYNC_FUZZ     = int(os.getenv("NTP_SYNC_FUZZ",     "0"))    # max random +/- offset on sync interval
+NTP_SYNC_FUZZ_PCT = int(os.getenv("NTP_SYNC_FUZZ_PCT", "10"))  # sync interval fuzz as a percentage (0-50)
 NTP_RETRY_BASE    = 5     # seconds before first retry after a failed sync
 NTP_RETRY_MAX     = 300   # cap on retry backoff (5 minutes)
 
@@ -146,6 +146,9 @@ NTP_RETRY_MAX     = 300   # cap on retry backoff (5 minutes)
 #
 # NTP_SYNC_INTERVAL from settings.toml is the starting point and is never
 # modified — the adaptive system works through _adaptive_interval instead.
+#
+# Note: fuzz is percentage-based (NTP_SYNC_FUZZ_PCT) rather than a fixed
+# number of seconds, so it scales correctly as the adaptive interval changes.
 NTP_ADAPT_THRESHOLD = 100    # ms
 NTP_ADAPT_STEP      = 0.20   # 20% per sync
 NTP_INTERVAL_MIN    = 300    # 5 minutes
@@ -784,8 +787,8 @@ def show_info_screen(mono):
 
     info_title_lbl.text  = "-- System Info v{} --".format(VERSION)
     info_ntp_lbl.text    = "NTP:  " + NTP_SERVER
-    info_fuzz_lbl.text   = "Intv: {}s now {}s  Fuzz: +/-{}s".format(
-                               NTP_SYNC_INTERVAL, int(_adaptive_interval), NTP_SYNC_FUZZ)
+    info_fuzz_lbl.text   = "Intv: {}s now {}s  Fuzz: {}%".format(
+                               NTP_SYNC_INTERVAL, int(_adaptive_interval), NTP_SYNC_FUZZ_PCT)
     info_ssid_lbl.text   = "WiFi: " + (WIFI_SSID or "?")
     info_ip_lbl.text     = "IP:   " + ip
     info_mac_lbl.text    = "MAC:  " + mac
@@ -810,17 +813,25 @@ def hide_info_screen():
 def _next_sync_time(mono):
     """Return the monotonic time of the next NTP sync attempt.
 
-    Adds NTP_SYNC_INTERVAL to the current time, then applies a random fuzz
-    offset in the range [-NTP_SYNC_FUZZ, +NTP_SYNC_FUZZ] seconds.  Fuzz
-    prevents multiple devices sharing the same settings from hitting the NTP
-    server in lockstep (RFC 5905 recommends this practice).
+    Schedules the next sync at _adaptive_interval seconds from now, with a
+    random fuzz offset applied as a percentage of the current interval.
+    Using a percentage rather than a fixed number of seconds means the fuzz
+    scales correctly as the adaptive interval grows or shrinks — avoiding
+    edge cases where a large fixed fuzz could overwhelm a short interval.
+
+    Fuzz prevents multiple devices sharing the same settings from hitting
+    the NTP server in lockstep (RFC 5905 recommends this practice).
 
     The result is clamped so it is never in the past — the next attempt is
-    always at least one second from now regardless of the fuzz value.
+    always at least one second from now.
     """
-    # Use _adaptive_interval rather than NTP_SYNC_INTERVAL so the adaptive
-    # logic takes effect.  Fuzz is still applied on top of the adaptive value.
-    offset = random.uniform(-NTP_SYNC_FUZZ, NTP_SYNC_FUZZ) if NTP_SYNC_FUZZ > 0 else 0
+    if NTP_SYNC_FUZZ_PCT > 0:
+        # Scale fuzz as a fraction of the current adaptive interval so it
+        # remains proportionate at any interval length.
+        max_offset = _adaptive_interval * (NTP_SYNC_FUZZ_PCT / 100.0)
+        offset     = random.uniform(-max_offset, max_offset)
+    else:
+        offset = 0
     return mono + max(1, _adaptive_interval + offset)
 
 # ---------------------------------------------------------------------------
