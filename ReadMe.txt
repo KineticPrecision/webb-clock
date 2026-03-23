@@ -77,12 +77,15 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       Default: 3600 (one hour).  Shorter intervals improve long-term
       accuracy at the cost of slightly more network activity.
 
-  NTP_SYNC_FUZZ
-      A randomization window applied to the sync interval, in seconds.
-      The actual sync time is NTP_SYNC_INTERVAL ± a random value within
-      this range.  Prevents multiple devices with identical settings from
-      hitting the NTP server simultaneously (recommended by RFC 5905).
-      Default: 0 (disabled).  A value of 60 is a reasonable starting point.
+  NTP_SYNC_FUZZ_PCT
+      Randomization applied to the sync interval, expressed as a percentage
+      of the current interval.  The actual sync time is the current interval
+      ± up to this percentage, chosen randomly.  Using a percentage rather
+      than a fixed number of seconds means the fuzz scales correctly as the
+      adaptive interval grows or shrinks over time.  Prevents multiple
+      devices with identical settings from hitting the NTP server
+      simultaneously (recommended by RFC 5905).
+      Default: 10 (10%).  Set to 0 to disable.
 
   TIME_FORMAT
       24 for 24-hour display, 12 for 12-hour display.  Default: 24.
@@ -210,6 +213,9 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   2 hours regardless of how consistently the oscillator performs.
   NTP_SYNC_INTERVAL in settings.toml is the starting point; the live
   (adapted) interval is shown on the System Info screen alongside it.
+  The fuzz (NTP_SYNC_FUZZ_PCT) is applied as a percentage of whatever
+  the current adaptive interval is, so it remains proportionate at all
+  times — no edge cases as the interval grows or shrinks.
 
 
 --------------------------------------------------------------------------------
