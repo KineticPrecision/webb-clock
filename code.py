@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.13  (2026-03-22)
+# Version : 1.14  (2026-03-23)
 # Author  : Spencer Webb
 # License : MIT
 #
@@ -56,9 +56,13 @@
 #   y=  5-95  Large 7-segment HH:MM:SS digits
 #   y=111     Zone + sync status at scale 1 — e.g. "UTC-5  NTP SYNC OK  14:23:05"
 #             or "UTC-5  NTP SYNC FAIL  (OK 14:23:05)" when last attempt failed
-#   y=128     Status bar — sync countdown | NTP ping
+#   y=128     Status bar — sync countdown | battery level | NTP ping
 #
-# Display layout (status bar hidden, D2 short press):
+# Display layout (status bar hidden, battery present, D2 short press):
+#   y=  5-95  Large 7-segment HH:MM:SS digits
+#   y=115     Timezone left-justified at scale 2 | battery % right-justified
+#
+# Display layout (status bar hidden, no battery, D2 short press):
 #   y=  5-95  Large 7-segment HH:MM:SS digits
 #   y=115     Timezone label grows to scale 3, centered in freed space
 #
@@ -115,7 +119,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.13"   # shown on the info screen
+VERSION = "1.14"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -347,12 +351,24 @@ ping_label.anchor_point      = (1.0, 0.5)
 ping_label.anchored_position = (238, INFO_Y)
 group.append(ping_label)
 
+# -- Battery level label (status bar centre slot) --------------------------
+# Shows "BATT XX%" when a battery is detected, hidden otherwise.
+# Updated once per minute — battery level changes slowly.
+# Shares the centre slot previously occupied by the drift display.
+# Hidden along with the other status bar labels when D2 toggles the bar off.
+batt_label = label.Label(terminalio.FONT, text="", color=INFO_COLOR, scale=1)
+batt_label.anchor_point      = (0.5, 0.5)
+batt_label.anchored_position = (120, INFO_Y)
+batt_label.hidden            = True   # shown only when battery_monitor is not None
+group.append(batt_label)
+
 # -- Timezone / sync-status / brightness label -------------------------------
-# This label serves three roles depending on display mode, all managed by
+# This label serves four roles depending on display mode, all managed by
 # _update_zone_label():
-#   Normal, status bar visible : scale=1, "UTC-5  NTP SYNC OK  14:23:05"
-#   Normal, status bar hidden  : scale=3, "UTC-5" centered in freed space
-#   Brightness adjust mode     : scale=2, "Brightness:  XX%"
+#   Normal, status bar visible       : scale=1, "UTC-5  NTP SYNC OK  14:23:05"
+#   Normal, status bar hidden, batt  : scale=2, left-justified timezone
+#   Normal, status bar hidden, no batt: scale=3, "UTC-5" centered in freed space
+#   Brightness adjust mode           : scale=2, "Brightness:  XX%"
 zone_label = label.Label(
     terminalio.FONT,
     text  = TIMEZONES[tz_index][1],
@@ -362,6 +378,16 @@ zone_label = label.Label(
 zone_label.anchor_point      = (0.5, 0.5)
 zone_label.anchored_position = (120, UTC_Y)
 group.append(zone_label)
+
+# -- Battery level in clean mode (status bar hidden) ----------------------
+# Shown right-justified at UTC_Y_LARGE alongside the left-justified zone
+# label when the status bar is hidden and a battery is present.
+# Hidden in all other modes.
+batt_clean_label = label.Label(terminalio.FONT, text="", color=COLOR_SCHEMES[0][0], scale=2)
+batt_clean_label.anchor_point      = (1.0, 0.5)
+batt_clean_label.anchored_position = (236, UTC_Y_LARGE)
+batt_clean_label.hidden            = True
+group.append(batt_clean_label)
 
 # -- Error overlay labels — three lines of bright red text drawn directly over
 # the digit area (y=5-95).  On error the digit palette is dimmed to near-black
@@ -425,6 +451,10 @@ INFO_LABELS = (
     info_title_lbl, info_ntp_lbl, info_fuzz_lbl, info_ssid_lbl, info_ip_lbl,
     info_mac_lbl, info_batt_lbl, info_mem_lbl, info_uptime_lbl,
 )
+
+# Labels whose color must follow the active color scheme but are not on the
+# info screen — updated in apply_color_scheme() alongside INFO_LABELS.
+COLOR_TRACKED_LABELS = (batt_clean_label,)
 
 # ---------------------------------------------------------------------------
 # Button setup
@@ -527,33 +557,42 @@ def apply_color_scheme():
     zone_label.color = on_color
     for lbl in INFO_LABELS:
         lbl.color = on_color
+    for lbl in COLOR_TRACKED_LABELS:
+        lbl.color = on_color
 
 def _update_zone_label():
-    """Rebuild zone_label text, scale, and position to match current state.
+    """Rebuild zone_label, and batt_clean_label to match current display mode.
 
-    Three modes:
+    Four modes:
 
     Brightness adjust (brightness_adjust_active=True):
         scale=2, shows current brightness percentage centered at UTC_Y.
-        This gives a clear readout while the digit display acts as the
-        full-load brightness reference.
+        batt_clean_label is hidden — the zone area belongs to brightness.
 
     Status bar visible (info_visible=True):
-        scale=1, timezone + NTP sync status on one line:
-          "UTC-5  NTP SYNC OK  14:23:05"
-          "UTC-5  NTP SYNC FAIL  (OK 14:23:05)"
+        zone_label scale=1, one line: "UTC-5  NTP SYNC OK  14:23:05"
+                                  or "UTC-5  NTP SYNC FAIL  (OK 14:23:05)"
+        batt_clean_label hidden — battery is shown in the status bar instead.
 
-    Status bar hidden (info_visible=False):
-        scale=3, timezone only, centered in the freed space below the digits.
+    Status bar hidden, battery present (info_visible=False, battery_monitor):
+        zone_label scale=2, left-justified at UTC_Y_LARGE.
+        batt_clean_label scale=2, right-justified at UTC_Y_LARGE.
+        Together they fill the freed row with timezone and battery level.
 
-    Called after any sync attempt, timezone change, D2 toggle, or brightness
-    level change.
+    Status bar hidden, no battery (info_visible=False, no battery_monitor):
+        zone_label scale=3, centered at UTC_Y_LARGE (original clean mode).
+        batt_clean_label hidden.
+
+    Called after any sync attempt, timezone change, D2 toggle, brightness
+    level change, or battery reading update.
     """
     if brightness_adjust_active:
         pct = round(BRIGHTNESS_LEVELS[brightness_index] * 100)
         zone_label.text              = "Brightness:  {}%".format(pct)
         zone_label.scale             = 2
+        zone_label.anchor_point      = (0.5, 0.5)
         zone_label.anchored_position = (120, UTC_Y)
+        batt_clean_label.hidden      = True
         return
 
     tz_str = TIMEZONES[tz_index][1]
@@ -563,11 +602,46 @@ def _update_zone_label():
         else:
             zone_label.text = "{}  NTP SYNC FAIL  (OK {})".format(tz_str, last_sync_ok_hms)
         zone_label.scale             = 1
+        zone_label.anchor_point      = (0.5, 0.5)
         zone_label.anchored_position = (120, UTC_Y)
+        batt_clean_label.hidden      = True
     else:
-        zone_label.text              = tz_str
-        zone_label.scale             = 3
-        zone_label.anchored_position = (120, UTC_Y_LARGE)
+        # Clean mode — use the freed space for both timezone and battery if available
+        if battery_monitor:
+            zone_label.text              = tz_str
+            zone_label.scale             = 2
+            zone_label.anchor_point      = (0.0, 0.5)
+            zone_label.anchored_position = (4, UTC_Y_LARGE)
+            batt_clean_label.hidden      = False
+        else:
+            zone_label.text              = tz_str
+            zone_label.scale             = 3
+            zone_label.anchor_point      = (0.5, 0.5)
+            zone_label.anchored_position = (120, UTC_Y_LARGE)
+            batt_clean_label.hidden      = True
+
+# ---------------------------------------------------------------------------
+# Battery display helper
+# ---------------------------------------------------------------------------
+def _update_battery_labels():
+    """Read the battery monitor and refresh batt_label and batt_clean_label.
+
+    Called once per minute from the main loop.  Both labels are updated
+    regardless of their current visibility — _update_zone_label() controls
+    whether each label is shown; this function only sets the text.
+
+    If the battery read fails, both labels show "BATT ?%" so the failure
+    is visible rather than silently stale.
+    """
+    if not battery_monitor:
+        return
+    try:
+        pct      = int(battery_monitor.cell_percent)
+        batt_str = "BATT {}%".format(pct)
+    except Exception:
+        batt_str = "BATT ?%"
+    batt_label.text       = batt_str
+    batt_clean_label.text = batt_str
 
 # Maximum characters per error line at scale=2.
 # terminalio.FONT glyphs are 6px wide; scale=2 → 12px per char.
@@ -643,6 +717,7 @@ def _enter_brightness_adjust():
     brightness_adjust_active = True
     sync_label.hidden        = True
     ping_label.hidden        = True
+    batt_label.hidden        = True   # hidden during brightness adjust; restored on exit
     _draw_lamp_test()
     _last_digits[:] = [-1] * 6   # lamp test overwrites the bitmap; reset cache so
                                   # draw_time() treats all slots as changed on next tick
@@ -655,6 +730,8 @@ def _exit_brightness_adjust():
     info_visible             = info_visible_saved
     sync_label.hidden        = not info_visible
     ping_label.hidden        = not info_visible
+    if battery_monitor:
+        batt_label.hidden    = not info_visible
     last_second              = -1   # force full clock redraw on next loop tick
     _update_zone_label()
 
@@ -754,6 +831,12 @@ try:
     battery_monitor = adafruit_max1704x.MAX17048(board.I2C())
 except Exception:
     battery_monitor = None
+
+# Populate battery labels immediately if a battery is present, so the
+# display shows a reading as soon as the clock face is ready.
+if battery_monitor:
+    _update_battery_labels()
+    batt_label.hidden = False   # visible in status bar by default
 
 # ---------------------------------------------------------------------------
 # Software clock
@@ -866,7 +949,8 @@ if have_time:
     clear_error()
 _update_zone_label()
 
-last_second = -1
+last_second          = -1
+last_battery_minute  = -1   # tracks the last minute a battery reading was taken
 
 # ---------------------------------------------------------------------------
 # Main loop
@@ -902,6 +986,11 @@ while True:
                 h = h % 12 or 12  # 0 -> 12, 13 -> 1, etc.
             draw_time(h, m, s)
             sync_label.text = "Sync {:4d}s".format(int(next_ntp_try - mono))
+            # Update battery reading once per minute — level changes slowly
+            if battery_monitor and m != last_battery_minute:
+                last_battery_minute = m
+                _update_battery_labels()
+                _update_zone_label()   # refresh clean-mode batt_clean_label if visible
 
     # --- D0: hold = info screen, quick press = color cycle or dismiss --------
     # Pull.UP: resting state True (HIGH), pressed False (LOW)
@@ -975,7 +1064,9 @@ while True:
                 info_visible      = not info_visible
                 sync_label.hidden = not info_visible
                 ping_label.hidden = not info_visible
-                _update_zone_label()            # toggle status bar visibility
+                if battery_monitor:
+                    batt_label.hidden = not info_visible
+                _update_zone_label()            # toggle status bar and clean-mode battery
         # If held_since is None the hold already fired — do nothing on release
         btn_d2_held_since = None
     btn_d2_last = btn_d2_now
