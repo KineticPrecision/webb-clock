@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.14
+ webb-clock  v1.15
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -120,7 +120,8 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
     The bottom status bar shows the time until the next sync on the left,
     the battery level in the centre (if a battery is present), and the
     last NTP round-trip (ping) time on the right.  The battery level is
-    updated once per minute.
+    updated once per minute.  The sync countdown reflects the live adaptive
+    interval, which may differ from the NTP_SYNC_INTERVAL setting.
 
   Clean mode (status bar hidden, D2 short press):
     The status bar is hidden.  If a battery is present, the timezone
@@ -152,9 +153,9 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
 
   D0  (hold 0.5s)
       Opens the System Info screen, which remains visible after release.
-      Displays: firmware version, NTP server, sync interval and fuzz,
-      WiFi SSID, IP address, MAC address, battery level (if present),
-      free memory, and uptime.
+      Displays: firmware version, NTP server, baseline and current adaptive
+      sync interval with fuzz, WiFi SSID, IP address, MAC address, battery
+      level (if present), free memory, and uptime.
 
   D0  (short press while info screen is showing)
       Dismisses the info screen and returns to the clock.
@@ -198,6 +199,17 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   interval, worst-case drift before correction is on the order of seconds.
   Reducing NTP_SYNC_INTERVAL to 900 seconds (15 minutes) keeps the
   displayed time within roughly 150ms of true UTC at all times.
+
+  Adaptive sync interval:
+  After each successful sync the clock measures how large the correction
+  was — the difference between what the software clock believed and what
+  NTP reported.  If the correction was small (under 100ms) the oscillator
+  ran well and the next sync interval is extended by 20%, saving battery.
+  If the correction was large the interval is shortened by 20% to keep
+  accuracy in check.  The interval is bounded between 5 minutes and
+  2 hours regardless of how consistently the oscillator performs.
+  NTP_SYNC_INTERVAL in settings.toml is the starting point; the live
+  (adapted) interval is shown on the System Info screen alongside it.
 
 
 --------------------------------------------------------------------------------

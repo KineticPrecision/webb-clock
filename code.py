@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.14  (2026-03-23)
+# Version : 1.15  (2026-03-23)
 # Author  : Spencer Webb
 # License : MIT
 #
@@ -119,7 +119,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.14"   # shown on the info screen
+VERSION = "1.15"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -131,6 +131,25 @@ NTP_SYNC_INTERVAL = int(os.getenv("NTP_SYNC_INTERVAL", "3600"))  # seconds betwe
 NTP_SYNC_FUZZ     = int(os.getenv("NTP_SYNC_FUZZ",     "0"))    # max random +/- offset on sync interval
 NTP_RETRY_BASE    = 5     # seconds before first retry after a failed sync
 NTP_RETRY_MAX     = 300   # cap on retry backoff (5 minutes)
+
+# Adaptive sync interval tuning.
+# After each successful sync the measured correction (difference between
+# the software clock and NTP) is compared to NTP_ADAPT_THRESHOLD.  If the
+# correction was small the oscillator ran well and the interval is extended;
+# if it was large the interval is shortened.  This trades off accuracy
+# against WiFi activity and battery consumption over time.
+#
+# NTP_ADAPT_THRESHOLD : correction below this (ms) is "good" → extend interval
+# NTP_ADAPT_STEP      : fractional adjustment per sync (0.20 = 20%)
+# NTP_INTERVAL_MIN    : floor on the adaptive interval (seconds)
+# NTP_INTERVAL_MAX    : ceiling on the adaptive interval (seconds)
+#
+# NTP_SYNC_INTERVAL from settings.toml is the starting point and is never
+# modified — the adaptive system works through _adaptive_interval instead.
+NTP_ADAPT_THRESHOLD = 100    # ms
+NTP_ADAPT_STEP      = 0.20   # 20% per sync
+NTP_INTERVAL_MIN    = 300    # 5 minutes
+NTP_INTERVAL_MAX    = 7200   # 2 hours
 TIME_FORMAT       = int(os.getenv("TIME_FORMAT",       "24"))    # 12 or 24
 DEBUG             = int(os.getenv("DEBUG",             "0"))     # 1 = verbose serial output
 BRIGHTNESS        = float(os.getenv("BRIGHTNESS",     "1.0"))   # backlight level 0.0-1.0
@@ -765,8 +784,8 @@ def show_info_screen(mono):
 
     info_title_lbl.text  = "-- System Info v{} --".format(VERSION)
     info_ntp_lbl.text    = "NTP:  " + NTP_SERVER
-    info_fuzz_lbl.text   = "Interval: {}sec.  Fuzz: +/-{}sec.".format(
-                               NTP_SYNC_INTERVAL, NTP_SYNC_FUZZ)
+    info_fuzz_lbl.text   = "Intv: {}s now {}s  Fuzz: +/-{}s".format(
+                               NTP_SYNC_INTERVAL, int(_adaptive_interval), NTP_SYNC_FUZZ)
     info_ssid_lbl.text   = "WiFi: " + (WIFI_SSID or "?")
     info_ip_lbl.text     = "IP:   " + ip
     info_mac_lbl.text    = "MAC:  " + mac
@@ -799,8 +818,10 @@ def _next_sync_time(mono):
     The result is clamped so it is never in the past — the next attempt is
     always at least one second from now regardless of the fuzz value.
     """
+    # Use _adaptive_interval rather than NTP_SYNC_INTERVAL so the adaptive
+    # logic takes effect.  Fuzz is still applied on top of the adaptive value.
     offset = random.uniform(-NTP_SYNC_FUZZ, NTP_SYNC_FUZZ) if NTP_SYNC_FUZZ > 0 else 0
-    return mono + max(1, NTP_SYNC_INTERVAL + offset)
+    return mono + max(1, _adaptive_interval + offset)
 
 # ---------------------------------------------------------------------------
 # WiFi connection
@@ -864,6 +885,15 @@ sync_m       = 0
 sync_s       = 0
 sync_mono_ns = 0   # integer nanosecond anchor for the above H:M:S
 
+# Adaptive sync interval — starts at NTP_SYNC_INTERVAL and is adjusted
+# after each successful sync based on the measured clock correction.
+_adaptive_interval = NTP_SYNC_INTERVAL
+
+# Correction measured at the most recent successful sync (ms).
+# None on the first sync (no previous software clock state to compare).
+# Set by sync_ntp(), read by the main loop to drive interval adaptation.
+last_correction_ms = None
+
 def sync_ntp():
     """Fetch UTC from the NTP server and update the software clock.
 
@@ -878,7 +908,7 @@ def sync_ntp():
     Returns True on success, False on any error.
     """
     global sync_h, sync_m, sync_s, sync_mono_ns
-    global last_sync_ok, last_sync_ok_hms
+    global last_sync_ok, last_sync_ok_hms, last_correction_ms
 
     if DEBUG: print("Syncing NTP...")
     try:
@@ -889,12 +919,39 @@ def sync_ntp():
         extra_secs = int(total_ms // 1000)  # whole seconds to fold into H:M:S
         remain_ms  = total_ms % 1000.0      # sub-second remainder (0.0 – 999.999)
 
+        # Capture monotonic timestamp once.  Used for both the correction
+        # measurement (comparing old clock to new NTP) and as the new anchor.
+        # A single call avoids a small systematic bias that would occur if we
+        # called monotonic_ns() twice at slightly different moments.
+        now_ns = time.monotonic_ns()
+
+        # --- Measure correction (pre-sync error) ----------------------------
+        # Compare what the software clock believed UTC was right now against
+        # what NTP reports.  Skip on the very first sync (sync_mono_ns == 0)
+        # because there is no meaningful previous state to compare.
+        if sync_mono_ns > 0:
+            old_elapsed_s  = (now_ns - sync_mono_ns) // 1_000_000_000
+            old_sub_ms     = ((now_ns - sync_mono_ns) % 1_000_000_000) / 1_000_000
+            old_utc_ms     = ((sync_h * 3600 + sync_m * 60 + sync_s
+                               + old_elapsed_s) % 86400) * 1000 + old_sub_ms
+            new_utc_ms     = ((unix_secs + extra_secs) % 86400) * 1000 + remain_ms
+            correction     = abs(new_utc_ms - old_utc_ms)
+            # Fold values that crossed midnight back into a positive difference
+            if correction > 43200000:   # more than 12 hours = midnight wrap
+                correction = 86400000 - correction
+            last_correction_ms = correction
+        else:
+            last_correction_ms = None   # no baseline yet
+
+        # --- Update software clock ------------------------------------------
         sync_h, sync_m, sync_s = webb_ntp.unix_to_hms(unix_secs + extra_secs)
 
         # Store the monotonic anchor as integer nanoseconds — exact at any uptime.
         # Back-date by remain_ms so the clock counts from the true start of sync_s.
         # int() conversion of remain_ms * 1_000_000 is exact for values < 1000ms.
-        sync_mono_ns = time.monotonic_ns() - int(remain_ms * 1_000_000)
+        # now_ns is reused here so the anchor is consistent with the correction
+        # measurement above — no second call to monotonic_ns() needed.
+        sync_mono_ns = now_ns - int(remain_ms * 1_000_000)
 
         ping_label.text = "Ping {:4d}ms".format(int(rtt_ms))
 
@@ -905,7 +962,10 @@ def sync_ntp():
         last_sync_ok_hms = "{:02d}:{:02d}:{:02d}".format(
             _loc // 3600, (_loc % 3600) // 60, _loc % 60)
 
-        if DEBUG: print("Synced. rtt={}ms frac={}ms".format(int(rtt_ms), int(frac_ms)))
+        if DEBUG:
+            print("Synced. rtt={}ms frac={}ms correction={}ms".format(
+                int(rtt_ms), int(frac_ms),
+                "{:.1f}".format(last_correction_ms) if last_correction_ms is not None else "n/a"))
         return True
 
     except Exception as e:
@@ -965,8 +1025,22 @@ while True:
         if ok:
             have_time    = True
             retry_s      = NTP_RETRY_BASE
-            next_ntp_try = _next_sync_time(mono)
             clear_error()
+            # Adapt the sync interval based on how large the clock correction was.
+            # A small correction means the oscillator ran well this interval, so
+            # we can safely wait longer before the next sync (saving battery).
+            # A large correction means more drift occurred, so we sync sooner.
+            # Skip adaptation on the first sync (no baseline correction available).
+            if last_correction_ms is not None:
+                if last_correction_ms < NTP_ADAPT_THRESHOLD:
+                    _adaptive_interval = min(
+                        _adaptive_interval * (1 + NTP_ADAPT_STEP), NTP_INTERVAL_MAX)
+                else:
+                    _adaptive_interval = max(
+                        _adaptive_interval * (1 - NTP_ADAPT_STEP), NTP_INTERVAL_MIN)
+                if DEBUG: print("Adaptive interval: {:.0f}s correction: {:.1f}ms".format(
+                    _adaptive_interval, last_correction_ms))
+            next_ntp_try = _next_sync_time(mono)
         else:
             # Keep the software clock running on the last good fix.
             # Schedule retry with exponential backoff, capped at NTP_RETRY_MAX.
