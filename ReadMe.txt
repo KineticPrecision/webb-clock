@@ -197,12 +197,6 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   true UTC at the moment of the sync, not the moment the server sent its
   response.
 
-  The hardware crystal oscillator will drift between syncs — typically a
-  few hundred milliseconds per hour.  With the default one-hour sync
-  interval, worst-case drift before correction is on the order of seconds.
-  Reducing NTP_SYNC_INTERVAL to 900 seconds (15 minutes) keeps the
-  displayed time within roughly 150ms of true UTC at all times.
-
   Adaptive sync interval:
   After each successful sync the clock measures the correction — the
   difference between what the software clock believed and what NTP
