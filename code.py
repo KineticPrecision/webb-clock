@@ -1023,11 +1023,6 @@ def sync_ntp():
         if DEBUG:
             up = int(time.monotonic() - boot_mono)
             up_str   = "{}h{:02d}m{:02d}s".format(up // 3600, (up % 3600) // 60, up % 60)
-            # Next sync time in local clock time
-            nxt_secs = (sync_h * 3600 + sync_m * 60 + sync_s
-                        + int(_adaptive_interval) + TIMEZONES[tz_index][0] * 60) % 86400
-            nxt_str  = "{:02d}:{:02d}:{:02d}".format(
-                nxt_secs // 3600, (nxt_secs % 3600) // 60, nxt_secs % 60)
             # Battery: percentage + voltage
             batt_str = ""
             if battery_monitor:
@@ -1038,9 +1033,9 @@ def sync_ntp():
                     batt_str = "  batt=err"
             # Correction as integer (quantized to ~8ms due to ESP32-S3 timer resolution)
             corr_str = "{}ms".format(int(last_correction_ms)) if last_correction_ms is not None else "n/a"
-            _dbg("Synced  time={}  rtt={}ms frac={}ms correction={}  next={}  uptime={}  mem={}b{}".format(
+            _dbg("Synced  time={}  rtt={}ms frac={}ms correction={}  uptime={}  mem={}b{}".format(
                 last_sync_ok_hms, int(rtt_ms), int(frac_ms), corr_str,
-                nxt_str, up_str, gc.mem_free(), batt_str))
+                up_str, gc.mem_free(), batt_str))
         return True
 
     except Exception as e:
@@ -1131,6 +1126,14 @@ while True:
                     _dbg("Adaptive interval: {:.0f}s ({})  correction: {}ms  dead band: {:.0f}-{:.0f}ms".format(
                         _adaptive_interval, direction, int(last_correction_ms), _lower, _upper))
             next_ntp_try = _next_sync_time(mono)
+            # Log next sync time now that next_ntp_try reflects the adapted interval
+            if DEBUG:
+                nxt_ns   = int(next_ntp_try)
+                nxt_utc  = (sync_h * 3600 + sync_m * 60 + sync_s + nxt_ns - int(time.monotonic()))
+                nxt_loc  = (nxt_utc + TIMEZONES[tz_index][0] * 60) % 86400
+                _dbg("Next sync at {:02d}:{:02d}:{:02d}  (in {:.0f}s)".format(
+                    nxt_loc // 3600, (nxt_loc % 3600) // 60, nxt_loc % 60,
+                    next_ntp_try - mono))
         else:
             # Keep the software clock running on the last good fix.
             # Schedule retry with exponential backoff, capped at NTP_RETRY_MAX.
