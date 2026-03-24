@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.16
+ webb-clock  v1.17
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -112,8 +112,10 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       (or [--:--:--] before the first sync):
         - Boot banner showing version and all configuration parameters
         - WiFi connection with SSID and assigned IP address
-        - Each NTP sync: local time, RTT, fractional offset, correction,
-          uptime, and battery level (if present)
+        - Each NTP sync: local time, RTT, fractional offset, correction
+          (integer ms, quantized to ~8ms due to ESP32-S3 timer resolution),
+          next scheduled sync time, uptime, free memory, and battery
+          percentage + voltage (if present)
         - Adaptive interval decision: new interval, direction (EXTENDED /
           SHORTENED / NO CHANGE), correction, and dead band bounds
         - Sync failures: error message and next retry time
@@ -221,7 +223,7 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   correction consistently near the threshold would cause the interval
   to oscillate up and down indefinitely.  With default settings
   (threshold=100ms, band=20%) the dead band spans 80ms to 120ms.
-  The interval is bounded between 5 minutes and 2 hours.
+  The interval is bounded between 5 minutes and 3 hours.
   NTP_SYNC_INTERVAL in settings.toml is the starting point; the live
   (adapted) interval is shown on the System Info screen alongside it.
   The fuzz (NTP_SYNC_FUZZ_PCT) is applied as a percentage of the

@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.16  (2026-03-23)
+# Version : 1.17  (2026-03-24)
 # Author  : Spencer Webb
 # License : MIT
 #
@@ -119,7 +119,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.16"   # shown on the info screen
+VERSION = "1.17"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -157,7 +157,7 @@ NTP_ADAPT_BAND      = 20     # % — dead band is +/- this % of threshold
 #                              e.g. threshold=100, band=20 → dead band 80-120ms
 NTP_ADAPT_STEP      = 0.20   # 20% interval adjustment per sync
 NTP_INTERVAL_MIN    = 300    # 5 minutes
-NTP_INTERVAL_MAX    = 7200   # 2 hours
+NTP_INTERVAL_MAX    = 10800  # 3 hours
 TIME_FORMAT       = int(os.getenv("TIME_FORMAT",       "24"))    # 12 or 24
 DEBUG             = int(os.getenv("DEBUG",             "0"))     # 1 = verbose serial output
 BRIGHTNESS        = float(os.getenv("BRIGHTNESS",     "1.0"))   # backlight level 0.0-1.0
@@ -870,7 +870,7 @@ _dbg("Webb-Clock v{}  DEBUG enabled".format(VERSION))
 _dbg("NTP server: {}  interval: {}s  fuzz: {}%".format(
     NTP_SERVER, NTP_SYNC_INTERVAL, NTP_SYNC_FUZZ_PCT))
 _dbg("Adapt threshold: {}ms  band: {}%  step: {}%  min: {}s  max: {}s".format(
-    NTP_ADAPT_THRESHOLD, NTP_ADAPT_BAND, int(NTP_ADAPT_STEP * 100),
+    NTP_ADAPT_THRESHOLD, NTP_ADAPT_BAND, round(NTP_ADAPT_STEP * 100),
     NTP_INTERVAL_MIN, NTP_INTERVAL_MAX))
 _dbg("Connecting to WiFi: {}".format(WIFI_SSID))
 try:
@@ -899,9 +899,17 @@ try:
 except Exception:
     battery_monitor = None
 
-# Populate battery labels immediately if a battery is present, so the
-# display shows a reading as soon as the clock face is ready.
 if battery_monitor:
+    # The MAX17048 enters hibernation mode when the battery has been sitting
+    # at rest, causing cell_percent to read 0% on the first query.  Calling
+    # wake() forces the chip out of hibernation and triggers a fresh reading.
+    # A short delay gives the chip time to complete its first measurement
+    # before we read it.
+    try:
+        battery_monitor.wake()
+        time.sleep(0.5)
+    except Exception:
+        pass
     _update_battery_labels()
     batt_label.hidden = False   # visible in status bar by default
 
@@ -986,6 +994,9 @@ def sync_ntp():
             if correction > 43200000:   # more than 12 hours = midnight wrap
                 correction = 86400000 - correction
             last_correction_ms = correction
+            # NOTE: correction values are quantized to ~8ms multiples due to
+            # the ESP32-S3 hardware timer resolution of 1 microsecond (1MHz APB
+            # clock).  A reading of 0ms means true drift was < 4ms, not zero.
         else:
             last_correction_ms = None   # no baseline yet
 
@@ -1008,19 +1019,28 @@ def sync_ntp():
         last_sync_ok_hms = "{:02d}:{:02d}:{:02d}".format(
             _loc // 3600, (_loc % 3600) // 60, _loc % 60)
 
-        # Build sync summary — include local time, uptime, and battery if available
+        # Build sync summary with all diagnostic fields
         if DEBUG:
             up = int(time.monotonic() - boot_mono)
-            up_str = "{}h{:02d}m{:02d}s".format(up // 3600, (up % 3600) // 60, up % 60)
+            up_str   = "{}h{:02d}m{:02d}s".format(up // 3600, (up % 3600) // 60, up % 60)
+            # Next sync time in local clock time
+            nxt_secs = (sync_h * 3600 + sync_m * 60 + sync_s
+                        + int(_adaptive_interval) + TIMEZONES[tz_index][0] * 60) % 86400
+            nxt_str  = "{:02d}:{:02d}:{:02d}".format(
+                nxt_secs // 3600, (nxt_secs % 3600) // 60, nxt_secs % 60)
+            # Battery: percentage + voltage
             batt_str = ""
             if battery_monitor:
                 try:
-                    batt_str = "  batt={:.0f}%".format(battery_monitor.cell_percent)
+                    batt_str = "  batt={:.0f}% {:.2f}V".format(
+                        battery_monitor.cell_percent, battery_monitor.cell_voltage)
                 except Exception:
                     batt_str = "  batt=err"
-            corr_str = "{:.1f}ms".format(last_correction_ms) if last_correction_ms is not None else "n/a"
-            _dbg("Synced  time={}  rtt={}ms frac={}ms correction={}  uptime={}{}".format(
-                last_sync_ok_hms, int(rtt_ms), int(frac_ms), corr_str, up_str, batt_str))
+            # Correction as integer (quantized to ~8ms due to ESP32-S3 timer resolution)
+            corr_str = "{}ms".format(int(last_correction_ms)) if last_correction_ms is not None else "n/a"
+            _dbg("Synced  time={}  rtt={}ms frac={}ms correction={}  next={}  uptime={}  mem={}b{}".format(
+                last_sync_ok_hms, int(rtt_ms), int(frac_ms), corr_str,
+                nxt_str, up_str, gc.mem_free(), batt_str))
         return True
 
     except Exception as e:
@@ -1108,8 +1128,8 @@ while True:
                         direction = "SHORTENED"
                     else:
                         direction = "NO CHANGE"
-                    _dbg("Adaptive interval: {:.0f}s ({})  correction: {:.1f}ms  dead band: {:.0f}-{:.0f}ms".format(
-                        _adaptive_interval, direction, last_correction_ms, _lower, _upper))
+                    _dbg("Adaptive interval: {:.0f}s ({})  correction: {}ms  dead band: {:.0f}-{:.0f}ms".format(
+                        _adaptive_interval, direction, int(last_correction_ms), _lower, _upper))
             next_ntp_try = _next_sync_time(mono)
         else:
             # Keep the software clock running on the last good fix.
