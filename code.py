@@ -2,8 +2,9 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.17  (2026-03-24)
+# Version : 1.18  (2026-03-24)
 # Author  : Spencer Webb
+# Developed with : Claude Sonnet 4.6 (Anthropic)
 # License : MIT
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -119,7 +120,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.17"   # shown on the info screen
+VERSION = "1.18"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -1126,14 +1127,17 @@ while True:
                     _dbg("Adaptive interval: {:.0f}s ({})  correction: {}ms  dead band: {:.0f}-{:.0f}ms".format(
                         _adaptive_interval, direction, int(last_correction_ms), _lower, _upper))
             next_ntp_try = _next_sync_time(mono)
-            # Log next sync time now that next_ntp_try reflects the adapted interval
+            # Log next sync time — computed from seconds remaining until next_ntp_try,
+            # added to current local time.  next_ntp_try is now correctly set to the
+            # adapted interval so this reflects the actual next scheduled sync.
             if DEBUG:
-                nxt_ns   = int(next_ntp_try)
-                nxt_utc  = (sync_h * 3600 + sync_m * 60 + sync_s + nxt_ns - int(time.monotonic()))
-                nxt_loc  = (nxt_utc + TIMEZONES[tz_index][0] * 60) % 86400
-                _dbg("Next sync at {:02d}:{:02d}:{:02d}  (in {:.0f}s)".format(
+                secs_until  = int(next_ntp_try - mono)
+                h_now, m_now, s_now = current_time(time.monotonic_ns())
+                nxt_loc = (h_now * 3600 + m_now * 60 + s_now + secs_until
+                           + TIMEZONES[tz_index][0] * 60) % 86400
+                _dbg("Next sync at {:02d}:{:02d}:{:02d}  (in {}s)".format(
                     nxt_loc // 3600, (nxt_loc % 3600) // 60, nxt_loc % 60,
-                    next_ntp_try - mono))
+                    secs_until))
         else:
             # Keep the software clock running on the last good fix.
             # Schedule retry with exponential backoff, capped at NTP_RETRY_MAX.

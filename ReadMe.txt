@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.17
+ webb-clock  v1.18
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -118,6 +118,7 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
           percentage + voltage (if present)
         - Adaptive interval decision: new interval, direction (EXTENDED /
           SHORTENED / NO CHANGE), correction, and dead band bounds
+        - Next scheduled sync time in local clock time, with seconds remaining
         - Sync failures: error message and next retry time
       Serial console baud rate: 115200.  Default: 0 (disabled).
 
@@ -238,6 +239,15 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   Timezone map        : https://www.timeanddate.com/time/map/
   Adafruit ESP32-S3   : https://www.adafruit.com/product/5691
   CircuitPython       : https://circuitpython.org
+
+
+--------------------------------------------------------------------------------
+ ACKNOWLEDGEMENTS
+--------------------------------------------------------------------------------
+
+  Developed in collaboration with Claude Sonnet 4.6, an AI assistant made by
+  Anthropic.  Claude contributed code, analysis, debugging, and documentation
+  throughout the project, under the direction of Spencer Webb.
 
 
 --------------------------------------------------------------------------------

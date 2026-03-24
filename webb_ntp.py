@@ -4,6 +4,7 @@
 #
 # Version : 1.0  (2026-03-22)
 # Author  : Spencer Webb
+# Developed with : Claude Sonnet 4.6 (Anthropic)
 # License : MIT
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
