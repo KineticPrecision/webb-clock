@@ -1086,8 +1086,8 @@ _update_zone_label()
 if DEBUG:
     _b_lower = NTP_ADAPT_THRESHOLD * (1 - NTP_ADAPT_BAND / 100.0)
     _b_upper = NTP_ADAPT_THRESHOLD * (1 + NTP_ADAPT_BAND / 100.0)
-    _dbg("Interval: {:.0f}s  dead band={:.0f}-{:.0f}ms".format(
-        _adaptive_interval, _b_lower, _b_upper))
+    _dbg("Interval: {:.0f}s (fuzz +/-{}%)  dead band={:.0f}-{:.0f}ms".format(
+        _adaptive_interval, NTP_SYNC_FUZZ_PCT, _b_lower, _b_upper))
     _b_secs = int(next_ntp_try - time.monotonic())
     _b_h, _b_m, _b_s = current_time(time.monotonic_ns())
     _b_nxt  = (_b_h * 3600 + _b_m * 60 + _b_s + _b_secs) % 86400
@@ -1137,8 +1137,8 @@ while True:
                 # Line 2: what was decided — always shown
                 if last_correction_ms is None:
                     # First sync — no adaptation, just report current interval
-                    _dbg("Interval: {:.0f}s  dead band={:.0f}-{:.0f}ms".format(
-                        _adaptive_interval, _lower, _upper))
+                    _dbg("Interval: {:.0f}s (fuzz +/-{}%)  dead band={:.0f}-{:.0f}ms".format(
+                        _adaptive_interval, NTP_SYNC_FUZZ_PCT, _lower, _upper))
                 else:
                     if last_correction_ms < _lower:
                         direction = "EXTENDED"
@@ -1147,11 +1147,11 @@ while True:
                     else:
                         direction = "NO CHANGE"
                     if direction == "NO CHANGE":
-                        _dbg("Interval: {:.0f}s ({})  dead band={:.0f}-{:.0f}ms".format(
-                            _adaptive_interval, direction, _lower, _upper))
+                        _dbg("Interval: {:.0f}s ({}) (fuzz +/-{}%)  dead band={:.0f}-{:.0f}ms".format(
+                            _adaptive_interval, direction, NTP_SYNC_FUZZ_PCT, _lower, _upper))
                     else:
-                        _dbg("Interval: {:.0f}s → {:.0f}s ({})  dead band={:.0f}-{:.0f}ms".format(
-                            _prev_interval, _adaptive_interval, direction, _lower, _upper))
+                        _dbg("Interval: {:.0f}s → {:.0f}s ({}) (fuzz +/-{}%)  dead band={:.0f}-{:.0f}ms".format(
+                            _prev_interval, _adaptive_interval, direction, NTP_SYNC_FUZZ_PCT, _lower, _upper))
                 # Line 3: what is next — always shown
                 # Use current_time() for clean integer arithmetic; tz offset already included.
                 # Add secs_until to local time to get the local time at next sync.
