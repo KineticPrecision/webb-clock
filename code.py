@@ -1108,6 +1108,7 @@ while True:
                 # system from hunting around the threshold value.
                 _lower = NTP_ADAPT_THRESHOLD * (1 - NTP_ADAPT_BAND / 100.0)
                 _upper = NTP_ADAPT_THRESHOLD * (1 + NTP_ADAPT_BAND / 100.0)
+                _prev_interval = _adaptive_interval   # save before possible modification
                 if last_correction_ms < _lower:
                     # Correction was small — oscillator ran well, extend interval
                     _adaptive_interval = min(
@@ -1124,20 +1125,16 @@ while True:
                         direction = "SHORTENED"
                     else:
                         direction = "NO CHANGE"
-                    _dbg("Adaptive interval: {:.0f}s ({})  correction: {}ms  dead band: {:.0f}-{:.0f}ms".format(
-                        _adaptive_interval, direction, int(last_correction_ms), _lower, _upper))
+                    _dbg("Interval: {:.0f}s → {:.0f}s ({})  dead band={:.0f}-{:.0f}ms".format(
+                        _prev_interval, _adaptive_interval, direction, _lower, _upper))
             next_ntp_try = _next_sync_time(mono)
-            # Log next sync time — computed from seconds remaining until next_ntp_try,
-            # added to current local time.  next_ntp_try is now correctly set to the
-            # adapted interval so this reflects the actual next scheduled sync.
             if DEBUG:
-                secs_until  = int(next_ntp_try - mono)
-                h_now, m_now, s_now = current_time(time.monotonic_ns())
-                nxt_loc = (h_now * 3600 + m_now * 60 + s_now + secs_until
-                           + TIMEZONES[tz_index][0] * 60) % 86400
+                # Compute next sync local time from current UTC anchor + seconds until next sync
+                secs_until = int(next_ntp_try - mono)
+                utc_now    = sync_h * 3600 + sync_m * 60 + sync_s + int(time.monotonic() - (sync_mono_ns / 1_000_000_000))
+                nxt_loc    = (utc_now + secs_until + TIMEZONES[tz_index][0] * 60) % 86400
                 _dbg("Next sync at {:02d}:{:02d}:{:02d}  (in {}s)".format(
-                    nxt_loc // 3600, (nxt_loc % 3600) // 60, nxt_loc % 60,
-                    secs_until))
+                    nxt_loc // 3600, (nxt_loc % 3600) // 60, nxt_loc % 60, secs_until))
         else:
             # Keep the software clock running on the last good fix.
             # Schedule retry with exponential backoff, capped at NTP_RETRY_MAX.
