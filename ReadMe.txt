@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.15
+ webb-clock  v1.16
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -106,8 +106,18 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       with the D1 button.  Default: 0 (UTC).
 
   DEBUG
-      Set to 1 to enable verbose output on the serial console.  Useful
-      when the board is connected to a computer via USB.  Default: 0.
+      Set to 1 to enable timestamped verbose output on the serial console.
+      Useful when the board is connected to a computer via USB.
+      When enabled, the following events are logged with [HH:MM:SS] timestamps
+      (or [--:--:--] before the first sync):
+        - Boot banner showing version and all configuration parameters
+        - WiFi connection with SSID and assigned IP address
+        - Each NTP sync: local time, RTT, fractional offset, correction,
+          uptime, and battery level (if present)
+        - Adaptive interval decision: new interval, direction (EXTENDED /
+          SHORTENED / NO CHANGE), correction, and dead band bounds
+        - Sync failures: error message and next retry time
+      Serial console baud rate: 115200.  Default: 0 (disabled).
 
 
 --------------------------------------------------------------------------------

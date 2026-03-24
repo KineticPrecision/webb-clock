@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.15  (2026-03-23)
+# Version : 1.16  (2026-03-23)
 # Author  : Spencer Webb
 # License : MIT
 #
@@ -119,7 +119,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.15"   # shown on the info screen
+VERSION = "1.16"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -670,6 +670,30 @@ def _update_battery_labels():
     batt_label.text       = batt_str
     batt_clean_label.text = batt_str
 
+# ---------------------------------------------------------------------------
+# Debug helper
+# ---------------------------------------------------------------------------
+def _dbg(msg):
+    """Print a timestamped debug message to the serial console.
+
+    Prefixes each message with the current local time [HH:MM:SS] from the
+    software clock, or [--:--:--] before the first NTP sync.  Only produces
+    output when DEBUG = 1 in settings.toml.
+    """
+    if not DEBUG:
+        return
+    # sync_mono_ns may not be defined yet at boot time — use try/except
+    # so _dbg() is safe to call anywhere in the file.
+    try:
+        has_time = sync_mono_ns > 0
+    except NameError:
+        has_time = False
+    if has_time:
+        h, m, s = current_time(time.monotonic_ns())
+        print("[{:02d}:{:02d}:{:02d}] {}".format(h, m, s, msg))
+    else:
+        print("[--:--:--] {}".format(msg))
+
 # Maximum characters per error line at scale=2.
 # terminalio.FONT glyphs are 6px wide; scale=2 → 12px per char.
 # 240px wide display with 4px margin each side → floor((240-8)/12) = 19 chars.
@@ -710,7 +734,7 @@ def show_error(msg):
 
     clear_error() reverses both the palette change and the label visibility.
     """
-    if DEBUG: print("Error:", msg)
+    _dbg("ERROR: " + msg)
     # Dim the digit palette so segments recede into near-black
     palette[1] = 0x080808
     palette[2] = 0x000000
@@ -842,10 +866,16 @@ def _next_sync_time(mono):
 # ---------------------------------------------------------------------------
 # WiFi connection
 # ---------------------------------------------------------------------------
-if DEBUG: print("Connecting to WiFi...")
+_dbg("Webb-Clock v{}  DEBUG enabled".format(VERSION))
+_dbg("NTP server: {}  interval: {}s  fuzz: {}%".format(
+    NTP_SERVER, NTP_SYNC_INTERVAL, NTP_SYNC_FUZZ_PCT))
+_dbg("Adapt threshold: {}ms  band: {}%  step: {}%  min: {}s  max: {}s".format(
+    NTP_ADAPT_THRESHOLD, NTP_ADAPT_BAND, int(NTP_ADAPT_STEP * 100),
+    NTP_INTERVAL_MIN, NTP_INTERVAL_MAX))
+_dbg("Connecting to WiFi: {}".format(WIFI_SSID))
 try:
     wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
-    if DEBUG: print("Connected:", wifi.radio.ipv4_address)
+    if DEBUG: _dbg("WiFi connected  IP: {}".format(wifi.radio.ipv4_address))
 except Exception as e:
     show_error("WiFi failed: " + str(e))
     while True:
@@ -926,7 +956,7 @@ def sync_ntp():
     global sync_h, sync_m, sync_s, sync_mono_ns
     global last_sync_ok, last_sync_ok_hms, last_correction_ms
 
-    if DEBUG: print("Syncing NTP...")
+    _dbg("Syncing NTP...")
     try:
         unix_secs, frac_ms, rtt_ms = webb_ntp.get_time(pool, NTP_SERVER)
 
@@ -978,10 +1008,19 @@ def sync_ntp():
         last_sync_ok_hms = "{:02d}:{:02d}:{:02d}".format(
             _loc // 3600, (_loc % 3600) // 60, _loc % 60)
 
+        # Build sync summary — include local time, uptime, and battery if available
         if DEBUG:
-            print("Synced. rtt={}ms frac={}ms correction={}ms".format(
-                int(rtt_ms), int(frac_ms),
-                "{:.1f}".format(last_correction_ms) if last_correction_ms is not None else "n/a"))
+            up = int(time.monotonic() - boot_mono)
+            up_str = "{}h{:02d}m{:02d}s".format(up // 3600, (up % 3600) // 60, up % 60)
+            batt_str = ""
+            if battery_monitor:
+                try:
+                    batt_str = "  batt={:.0f}%".format(battery_monitor.cell_percent)
+                except Exception:
+                    batt_str = "  batt=err"
+            corr_str = "{:.1f}ms".format(last_correction_ms) if last_correction_ms is not None else "n/a"
+            _dbg("Synced  time={}  rtt={}ms frac={}ms correction={}  uptime={}{}".format(
+                last_sync_ok_hms, int(rtt_ms), int(frac_ms), corr_str, up_str, batt_str))
         return True
 
     except Exception as e:
@@ -1062,14 +1101,23 @@ while True:
                     _adaptive_interval = max(
                         _adaptive_interval * (1 - NTP_ADAPT_STEP), NTP_INTERVAL_MIN)
                 # else: correction inside dead band — leave interval unchanged
-                if DEBUG: print("Adaptive interval: {:.0f}s correction: {:.1f}ms band: {:.0f}-{:.0f}ms".format(
-                    _adaptive_interval, last_correction_ms, _lower, _upper))
+                if DEBUG:
+                    if last_correction_ms < _lower:
+                        direction = "EXTENDED"
+                    elif last_correction_ms > _upper:
+                        direction = "SHORTENED"
+                    else:
+                        direction = "NO CHANGE"
+                    _dbg("Adaptive interval: {:.0f}s ({})  correction: {:.1f}ms  dead band: {:.0f}-{:.0f}ms".format(
+                        _adaptive_interval, direction, last_correction_ms, _lower, _upper))
             next_ntp_try = _next_sync_time(mono)
         else:
             # Keep the software clock running on the last good fix.
             # Schedule retry with exponential backoff, capped at NTP_RETRY_MAX.
             next_ntp_try = mono + retry_s
             retry_s      = min(retry_s * 2, NTP_RETRY_MAX)
+            _dbg("Sync failed  next retry in {}s  backoff now {}s".format(
+                int(retry_s / 2), int(retry_s)))
         # Only update zone label if not in brightness adjust (which manages its own label)
         if not brightness_adjust_active:
             _update_zone_label()
