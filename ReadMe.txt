@@ -112,13 +112,16 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       (or [--:--:--] before the first sync):
         - Boot banner showing version and all configuration parameters
         - WiFi connection with SSID and assigned IP address
-        - Each NTP sync: local time, RTT, fractional offset, correction
-          (integer ms, quantized to ~8ms due to ESP32-S3 timer resolution),
-          next scheduled sync time, uptime, free memory, and battery
-          percentage + voltage (if present)
-        - Adaptive interval decision: new interval, direction (EXTENDED /
-          SHORTENED / NO CHANGE), correction, and dead band bounds
-        - Next scheduled sync time in local clock time, with seconds remaining
+        - Each NTP sync produces three lines:
+          1) WHAT HAPPENED: local time, RTT, fractional second offset,
+             correction in ms (quantized to ~8ms due to ESP32-S3 timer
+             resolution; "n/a" on first sync), uptime, free memory,
+             and battery percentage + voltage (if present)
+          2) WHAT WAS DECIDED: current adaptive interval, direction
+             (EXTENDED / SHORTENED / NO CHANGE with before→after on changes),
+             and dead band bounds in ms
+          3) WHAT IS NEXT: local clock time of next scheduled sync
+             and seconds until then
         - Sync failures: error message and next retry time
       Serial console baud rate: 115200.  Default: 0 (disabled).
 

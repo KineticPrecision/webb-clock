@@ -876,7 +876,7 @@ _dbg("Adapt threshold: {}ms  band: {}%  step: {}%  min: {}s  max: {}s".format(
 _dbg("Connecting to WiFi: {}".format(WIFI_SSID))
 try:
     wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
-    if DEBUG: _dbg("WiFi connected  IP: {}".format(wifi.radio.ipv4_address))
+    _dbg("WiFi connected  IP: {}".format(wifi.radio.ipv4_address))
 except Exception as e:
     show_error("WiFi failed: " + str(e))
     while True:
@@ -1080,6 +1080,21 @@ if have_time:
     clear_error()
 _update_zone_label()
 
+# Boot sync debug summary — mirrors the three lines printed in the main loop
+# after each subsequent sync.  The boot sync bypasses the main loop adaptation
+# block so we print these here instead.
+if DEBUG:
+    _b_lower = NTP_ADAPT_THRESHOLD * (1 - NTP_ADAPT_BAND / 100.0)
+    _b_upper = NTP_ADAPT_THRESHOLD * (1 + NTP_ADAPT_BAND / 100.0)
+    _dbg("Interval: {:.0f}s  dead band={:.0f}-{:.0f}ms".format(
+        _adaptive_interval, _b_lower, _b_upper))
+    _b_secs = int(next_ntp_try - time.monotonic())
+    _b_h, _b_m, _b_s = current_time(time.monotonic_ns())
+    _b_nxt  = (_b_h * 3600 + _b_m * 60 + _b_s + _b_secs) % 86400
+    _dbg("Next sync at {:02d}:{:02d}:{:02d}  (in {}s)".format(
+        _b_nxt // 3600, (_b_nxt % 3600) // 60, _b_nxt % 60, _b_secs))
+    del _b_lower, _b_upper, _b_secs, _b_h, _b_m, _b_s, _b_nxt
+
 last_second          = -1
 last_battery_minute  = -1   # tracks the last minute a battery reading was taken
 
@@ -1102,13 +1117,12 @@ while True:
             # we can safely wait longer before the next sync (saving battery).
             # A large correction means more drift occurred, so we sync sooner.
             # Skip adaptation on the first sync (no baseline correction available).
+            # Compute dead band bounds — used for both adaptation and debug output
+            _lower = NTP_ADAPT_THRESHOLD * (1 - NTP_ADAPT_BAND / 100.0)
+            _upper = NTP_ADAPT_THRESHOLD * (1 + NTP_ADAPT_BAND / 100.0)
+            _prev_interval = _adaptive_interval   # save before possible modification
             if last_correction_ms is not None:
-                # Compute dead band bounds from threshold and band percentage.
-                # Corrections inside the band take no action, preventing the
-                # system from hunting around the threshold value.
-                _lower = NTP_ADAPT_THRESHOLD * (1 - NTP_ADAPT_BAND / 100.0)
-                _upper = NTP_ADAPT_THRESHOLD * (1 + NTP_ADAPT_BAND / 100.0)
-                _prev_interval = _adaptive_interval   # save before possible modification
+                # Adjust interval based on correction vs dead band
                 if last_correction_ms < _lower:
                     # Correction was small — oscillator ran well, extend interval
                     _adaptive_interval = min(
@@ -1118,21 +1132,32 @@ while True:
                     _adaptive_interval = max(
                         _adaptive_interval * (1 - NTP_ADAPT_STEP), NTP_INTERVAL_MIN)
                 # else: correction inside dead band — leave interval unchanged
-                if DEBUG:
+            next_ntp_try = _next_sync_time(mono)
+            if DEBUG:
+                # Line 2: what was decided — always shown
+                if last_correction_ms is None:
+                    # First sync — no adaptation, just report current interval
+                    _dbg("Interval: {:.0f}s  dead band={:.0f}-{:.0f}ms".format(
+                        _adaptive_interval, _lower, _upper))
+                else:
                     if last_correction_ms < _lower:
                         direction = "EXTENDED"
                     elif last_correction_ms > _upper:
                         direction = "SHORTENED"
                     else:
                         direction = "NO CHANGE"
-                    _dbg("Interval: {:.0f}s → {:.0f}s ({})  dead band={:.0f}-{:.0f}ms".format(
-                        _prev_interval, _adaptive_interval, direction, _lower, _upper))
-            next_ntp_try = _next_sync_time(mono)
-            if DEBUG:
-                # Compute next sync local time from current UTC anchor + seconds until next sync
-                secs_until = int(next_ntp_try - mono)
-                utc_now    = sync_h * 3600 + sync_m * 60 + sync_s + int(time.monotonic() - (sync_mono_ns / 1_000_000_000))
-                nxt_loc    = (utc_now + secs_until + TIMEZONES[tz_index][0] * 60) % 86400
+                    if direction == "NO CHANGE":
+                        _dbg("Interval: {:.0f}s ({})  dead band={:.0f}-{:.0f}ms".format(
+                            _adaptive_interval, direction, _lower, _upper))
+                    else:
+                        _dbg("Interval: {:.0f}s → {:.0f}s ({})  dead band={:.0f}-{:.0f}ms".format(
+                            _prev_interval, _adaptive_interval, direction, _lower, _upper))
+                # Line 3: what is next — always shown
+                # Use current_time() for clean integer arithmetic; tz offset already included.
+                # Add secs_until to local time to get the local time at next sync.
+                secs_until  = int(next_ntp_try - mono)
+                h_n, m_n, s_n = current_time(time.monotonic_ns())
+                nxt_loc     = (h_n * 3600 + m_n * 60 + s_n + secs_until) % 86400
                 _dbg("Next sync at {:02d}:{:02d}:{:02d}  (in {}s)".format(
                     nxt_loc // 3600, (nxt_loc % 3600) // 60, nxt_loc % 60, secs_until))
         else:
