@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.18  (2026-03-24)
+# Version : 1.19  (2026-03-25)
 # Author  : Spencer Webb
 # Developed with : Claude Sonnet 4.6 (Anthropic)
 # License : MIT
@@ -87,9 +87,13 @@
 #   D2 hold 0.5s    — enter brightness adjustment mode
 #     D2 short press  — cycle through brightness levels (10/25/50/75/100%)
 #     D2 hold 0.5s    — exit brightness adjustment, restore prior display state
+#   Any button       — wake from battery saver mode (if active)
 #
 # Required libraries in /lib on CIRCUITPY:
-#   adafruit_display_text, adafruit_max1704x, webb_ntp
+#   adafruit_display_text, adafruit_max1704x
+#
+# Project modules at root level on CIRCUITPY (alongside code.py):
+#   webb_ntp.py
 #
 # All user settings live in settings.toml — see that file for options.
 # ============================================================================
@@ -106,6 +110,7 @@ import board
 import digitalio
 import displayio
 import socketpool
+import supervisor
 import terminalio
 import wifi
 
@@ -120,15 +125,17 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.18"   # shown on the info screen
+VERSION = "1.19"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
 # ---------------------------------------------------------------------------
 WIFI_SSID         = os.getenv("WIFI_SSID")
 WIFI_PASSWORD     = os.getenv("WIFI_PASSWORD")
-NTP_SERVER        = os.getenv("NTP_SERVER",        "pool.ntp.org")
-NTP_SYNC_INTERVAL = int(os.getenv("NTP_SYNC_INTERVAL", "3600"))  # seconds between syncs
+NTP_SERVER         = os.getenv("NTP_SERVER",         "time.nist.gov")
+NTP_SERVER_FALLBACK= os.getenv("NTP_SERVER_FALLBACK", "pool.ntp.org")
+NTP_FALLBACK_AFTER = 3    # switch to fallback after this many consecutive failures
+NTP_SYNC_INTERVAL  = int(os.getenv("NTP_SYNC_INTERVAL", "3600"))  # seconds between syncs
 NTP_SYNC_FUZZ_PCT = int(os.getenv("NTP_SYNC_FUZZ_PCT", "10"))  # sync interval fuzz as a percentage (0-50)
 NTP_RETRY_BASE    = 5     # seconds before first retry after a failed sync
 NTP_RETRY_MAX     = 300   # cap on retry backoff (5 minutes)
@@ -160,8 +167,9 @@ NTP_ADAPT_STEP      = 0.20   # 20% interval adjustment per sync
 NTP_INTERVAL_MIN    = 300    # 5 minutes
 NTP_INTERVAL_MAX    = 10800  # 3 hours
 TIME_FORMAT       = int(os.getenv("TIME_FORMAT",       "24"))    # 12 or 24
-DEBUG             = int(os.getenv("DEBUG",             "0"))     # 1 = verbose serial output
-BRIGHTNESS        = float(os.getenv("BRIGHTNESS",     "1.0"))   # backlight level 0.0-1.0
+DEBUG                  = int(os.getenv("DEBUG",                  "0"))    # 1 = verbose serial output
+BRIGHTNESS             = float(os.getenv("BRIGHTNESS",          "1.0"))  # backlight level 0.0-1.0
+BATTERY_SAVER_TIMEOUT  = int(os.getenv("BATTERY_SAVER_TIMEOUT", "60"))   # seconds idle on battery before dimming; 0=disabled
 INFO_BRIGHTNESS   = float(os.getenv("INFO_BRIGHTNESS", "1.0"))  # status bar text 0.0-1.0
 DEFAULT_TZ_OFFSET = int(os.getenv("DEFAULT_TZ_OFFSET", "0")) * 60  # hours -> minutes
 
@@ -372,11 +380,13 @@ display.root_group = group
 sync_label = label.Label(terminalio.FONT, text="", color=INFO_COLOR, scale=1)
 sync_label.anchor_point      = (0.0, 0.5)
 sync_label.anchored_position = (2, INFO_Y)
+sync_label.hidden            = True   # hidden by default (clean screen on boot)
 group.append(sync_label)
 
 ping_label = label.Label(terminalio.FONT, text="", color=INFO_COLOR, scale=1)
 ping_label.anchor_point      = (1.0, 0.5)
 ping_label.anchored_position = (238, INFO_Y)
+ping_label.hidden            = True   # hidden by default (clean screen on boot)
 group.append(ping_label)
 
 # -- Battery level label (status bar centre slot) --------------------------
@@ -509,9 +519,11 @@ btn_d0_held_since  = None  # monotonic time D0 was pressed, or None if not press
 btn_d1_last        = False
 
 # D2 state
-info_visible           = True   # whether the status bar is currently shown
+# info_visible starts False so the clean screen is the default on boot.
+# The user can toggle the status bar on with a D2 short press.
+info_visible           = False  # whether the status bar is currently shown
 brightness_adjust_active = False  # True while in brightness adjustment mode
-info_visible_saved     = True   # info_visible state saved on entering brightness adjust
+info_visible_saved     = False  # info_visible state saved on entering brightness adjust
 btn_d2_last            = False
 btn_d2_held_since      = None  # monotonic time D2 was pressed, or None if not pressed
 
@@ -873,6 +885,8 @@ _dbg("NTP server: {}  interval: {}s  fuzz: {}%".format(
 _dbg("Adapt threshold: {}ms  band: {}%  step: {}%  min: {}s  max: {}s".format(
     NTP_ADAPT_THRESHOLD, NTP_ADAPT_BAND, round(NTP_ADAPT_STEP * 100),
     NTP_INTERVAL_MIN, NTP_INTERVAL_MAX))
+_dbg("NTP fallback: {}  after {} failures".format(NTP_SERVER_FALLBACK, NTP_FALLBACK_AFTER))
+_dbg("Battery saver: {}s timeout  (0=disabled)".format(BATTERY_SAVER_TIMEOUT))
 _dbg("Connecting to WiFi: {}".format(WIFI_SSID))
 try:
     wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
@@ -912,7 +926,7 @@ if battery_monitor:
     except Exception:
         pass
     _update_battery_labels()
-    batt_label.hidden = False   # visible in status bar by default
+    batt_label.hidden = not info_visible   # respect default display mode
 
 # ---------------------------------------------------------------------------
 # Software clock
@@ -949,6 +963,14 @@ _adaptive_interval = NTP_SYNC_INTERVAL
 # Set by sync_ntp(), read by the main loop to drive interval adaptation.
 last_correction_ms = None
 
+# NTP fallback tracking.
+# _ntp_failures counts consecutive sync failures on the current server.
+# _using_fallback is True when the fallback server is active.
+# Switching to fallback happens after NTP_FALLBACK_AFTER failures;
+# switching back to primary happens silently on the next primary success.
+_ntp_failures    = 0
+_using_fallback  = False
+
 def sync_ntp():
     """Fetch UTC from the NTP server and update the software clock.
 
@@ -964,10 +986,13 @@ def sync_ntp():
     """
     global sync_h, sync_m, sync_s, sync_mono_ns
     global last_sync_ok, last_sync_ok_hms, last_correction_ms
+    global _ntp_failures, _using_fallback
 
-    _dbg("Syncing NTP...")
+    # Select server: fall back to secondary after repeated primary failures
+    active_server = NTP_SERVER_FALLBACK if _using_fallback else NTP_SERVER
+    _dbg("Syncing NTP... [{}]".format("FALLBACK" if _using_fallback else "primary"))
     try:
-        unix_secs, frac_ms, rtt_ms = webb_ntp.get_time(pool, NTP_SERVER)
+        unix_secs, frac_ms, rtt_ms = webb_ntp.get_time(pool, active_server)
 
         # Adjust for the fractional second already elapsed plus half the RTT
         total_ms   = frac_ms + rtt_ms / 2.0
@@ -1011,6 +1036,12 @@ def sync_ntp():
         # measurement above — no second call to monotonic_ns() needed.
         sync_mono_ns = now_ns - int(remain_ms * 1_000_000)
 
+        # Successful sync — reset failure counter.
+        # If we were on fallback, switch back to primary silently.
+        if _using_fallback:
+            _dbg("Sync recovered — returning to primary server")
+            _using_fallback = False
+        _ntp_failures = 0
         ping_label.text = "Ping {:4d}ms".format(int(rtt_ms))
 
         # Record successful sync time in local timezone for the zone label
@@ -1034,13 +1065,19 @@ def sync_ntp():
                     batt_str = "  batt=err"
             # Correction as integer (quantized to ~8ms due to ESP32-S3 timer resolution)
             corr_str = "{}ms".format(int(last_correction_ms)) if last_correction_ms is not None else "n/a"
-            _dbg("Synced  time={}  rtt={}ms frac={}ms correction={}  uptime={}  mem={}b{}".format(
+            _dbg("Synced [{}]  time={}  rtt={}ms frac={}ms correction={}  uptime={}  mem={}b{}".format(
+                "FALLBACK" if _using_fallback else "primary",
                 last_sync_ok_hms, int(rtt_ms), int(frac_ms), corr_str,
                 up_str, gc.mem_free(), batt_str))
         return True
 
     except Exception as e:
         last_sync_ok = False
+        _ntp_failures += 1
+        # Switch to fallback server after NTP_FALLBACK_AFTER consecutive failures
+        if not _using_fallback and _ntp_failures >= NTP_FALLBACK_AFTER:
+            _using_fallback = True
+            _dbg("Switching to FALLBACK server: {}".format(NTP_SERVER_FALLBACK))
         show_error("NTP sync failed: " + str(e))
         return False
 
@@ -1099,11 +1136,39 @@ last_second          = -1
 last_battery_minute  = -1   # tracks the last minute a battery reading was taken
 
 # ---------------------------------------------------------------------------
+# Battery saver state
+#
+# When running on battery only (no USB), the display dims to minimum
+# brightness after BATTERY_SAVER_TIMEOUT seconds of button inactivity.
+# Any button press restores full brightness and resets the idle timer.
+# BATTERY_SAVER_TIMEOUT = 0 disables the feature entirely.
+# supervisor.runtime.usb_connected is checked each loop tick so the
+# feature activates/deactivates automatically as USB is plugged/unplugged.
+# ---------------------------------------------------------------------------
+battery_saver_active    = False  # True while display is dimmed for battery saving
+batt_saver_last_active  = time.monotonic()  # monotonic time of last button activity
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 while True:
     mono    = time.monotonic()      # float — used for scheduling and button timing
     mono_ns = time.monotonic_ns()   # integer — used for sub-second clock display
+
+    # --- Battery saver mode -------------------------------------------------
+    # Dims display to minimum brightness after BATTERY_SAVER_TIMEOUT seconds
+    # of inactivity when running on battery only (no USB power detected).
+    # Any button press wakes the display and resets the idle timer.
+    if BATTERY_SAVER_TIMEOUT > 0 and not supervisor.runtime.usb_connected:
+        if not battery_saver_active:
+            if mono - batt_saver_last_active >= BATTERY_SAVER_TIMEOUT:
+                display.brightness = BRIGHTNESS_LEVELS[0]  # dim to minimum
+                battery_saver_active = True
+    elif battery_saver_active:
+        # USB reconnected — exit battery saver immediately
+        display.brightness = BRIGHTNESS_LEVELS[brightness_index]
+        battery_saver_active   = False
+        batt_saver_last_active = mono
 
     # --- Periodic NTP sync with backoff on failure --------------------------
     if mono >= next_ntp_try:
@@ -1140,13 +1205,20 @@ while True:
                     _dbg("Interval: {:.0f}s (fuzz +/-{}%)  dead band={:.0f}-{:.0f}ms".format(
                         _adaptive_interval, NTP_SYNC_FUZZ_PCT, _lower, _upper))
                 else:
+                    # Determine direction label, accounting for ceiling/floor
                     if last_correction_ms < _lower:
-                        direction = "EXTENDED"
+                        if _prev_interval >= NTP_INTERVAL_MAX:
+                            direction = "AT CEILING"
+                        else:
+                            direction = "EXTENDED"
                     elif last_correction_ms > _upper:
-                        direction = "SHORTENED"
+                        if _prev_interval <= NTP_INTERVAL_MIN:
+                            direction = "AT FLOOR"
+                        else:
+                            direction = "SHORTENED"
                     else:
                         direction = "NO CHANGE"
-                    if direction == "NO CHANGE":
+                    if direction in ("NO CHANGE", "AT CEILING", "AT FLOOR"):
                         _dbg("Interval: {:.0f}s ({}) (fuzz +/-{}%)  dead band={:.0f}-{:.0f}ms".format(
                             _adaptive_interval, direction, NTP_SYNC_FUZZ_PCT, _lower, _upper))
                     else:
@@ -1197,6 +1269,10 @@ while True:
     btn_d0_now = btn_d0.value
     if not btn_d0_now and btn_d0_last:
         # Falling edge — D0 signal went HIGH→LOW, button just pressed; start hold timer
+        batt_saver_last_active = mono   # reset battery saver idle timer
+        if battery_saver_active:
+            display.brightness   = BRIGHTNESS_LEVELS[brightness_index]
+            battery_saver_active = False
         btn_d0_held_since = mono
     elif not btn_d0_now and not btn_d0_last:
         # Still held — trigger info screen once hold threshold is reached
@@ -1220,6 +1296,10 @@ while True:
     # --- D1: advance timezone on rising edge --------------------------------
     btn_d1_now = btn_d1.value
     if btn_d1_now and not btn_d1_last:
+        batt_saver_last_active = mono   # reset battery saver idle timer
+        if battery_saver_active:
+            display.brightness   = BRIGHTNESS_LEVELS[brightness_index]
+            battery_saver_active = False
         tz_index    = (tz_index + 1) % len(TIMEZONES)
         last_second = -1   # invalidate cache so draw_time() runs immediately with new offset
         _update_zone_label()
@@ -1238,6 +1318,10 @@ while True:
     btn_d2_now = btn_d2.value
     if btn_d2_now and not btn_d2_last:
         # Rising edge — D2 signal went LOW→HIGH (active high), button just pressed; start hold timer
+        batt_saver_last_active = mono   # reset battery saver idle timer
+        if battery_saver_active:
+            display.brightness   = BRIGHTNESS_LEVELS[brightness_index]
+            battery_saver_active = False
         btn_d2_held_since = mono
     elif btn_d2_now and btn_d2_last:
         # Still held — trigger hold action once threshold is reached
