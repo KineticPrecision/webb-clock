@@ -7,8 +7,12 @@
 WIFI_SSID     = "your_ssid_here"
 WIFI_PASSWORD = "your_password_here"
 
-# NTP server hostname
-NTP_SERVER = "pool.ntp.org"
+# Primary NTP server hostname
+NTP_SERVER = "time.nist.gov"
+
+# Fallback NTP server — used automatically after repeated primary failures.
+# Switching back to primary happens silently when it recovers.
+NTP_SERVER_FALLBACK = "pool.ntp.org"
 
 # How often to sync with NTP (seconds)
 NTP_SYNC_INTERVAL = "3600"
@@ -30,10 +34,16 @@ DEBUG = "0"
 # Display brightness for the clock digits (backlight): 0.0 to 1.0
 # This is the power-on default. Brightness can be adjusted at runtime
 # by holding D2 and using short presses to cycle through five levels.
-BRIGHTNESS = "0.5"
+BRIGHTNESS = "1.0"
 
-# Brightness for the status bar text (Sync, Drift, Ping): 0.0 to 1.0
-INFO_BRIGHTNESS = "0.5"
+# Battery saver timeout in seconds (0 = disabled).
+# When running on battery only (no USB), the display dims to minimum
+# brightness after this many seconds of button inactivity.
+# Any button press restores brightness and resets the timer.
+BATTERY_SAVER_TIMEOUT = "60"
+
+# Brightness for the status bar text (Sync, Battery, Ping): 0.0 to 1.0
+INFO_BRIGHTNESS = "1.0"
 
 # Startup timezone offset in whole hours from UTC.
 # Examples: 0=UTC, -5=UTC-5, 1=UTC+1, -3=UTC-3

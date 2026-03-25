@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.18
+ webb-clock  v1.19
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -69,8 +69,14 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       Your WiFi network credentials.  Required.
 
   NTP_SERVER
-      Hostname of the NTP server.  Defaults to "pool.ntp.org", which is a
-      globally distributed pool that works well for most locations.
+      Hostname of the primary NTP server.  Defaults to "time.nist.gov",
+      a stratum 1 server operated by the US National Institute of Standards
+      and Technology.
+
+  NTP_SERVER_FALLBACK
+      Hostname of the fallback NTP server, used automatically after
+      3 consecutive primary failures.  The clock switches back to the
+      primary silently when it recovers.  Default: "pool.ntp.org".
 
   NTP_SYNC_INTERVAL
       How often to synchronize with the NTP server, in seconds.
@@ -105,6 +111,12 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       UTC+5:30), set the nearest whole hour here and fine-tune at runtime
       with the D1 button.  Default: 0 (UTC).
 
+  BATTERY_SAVER_TIMEOUT
+      When running on battery only (no USB power), the display dims to
+      minimum brightness after this many seconds of button inactivity.
+      Any button press restores full brightness and resets the timer.
+      Set to 0 to disable.  Default: 60 seconds.
+
   DEBUG
       Set to 1 to enable timestamped verbose output on the serial console.
       Useful when the board is connected to a computer via USB.
@@ -130,8 +142,14 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
  DISPLAY LAYOUT
 --------------------------------------------------------------------------------
 
-  Normal mode (status bar visible):
+  Clean mode (default on boot, status bar hidden):
     Large 7-segment HH:MM:SS digits fill the upper portion of the screen.
+    If a battery is present, the timezone label is left-justified and the
+    battery percentage is right-justified in the row below the digits.
+    Without a battery, the timezone label fills the full width at larger
+    size.  Toggle the status bar on with a D2 short press.
+
+  Normal mode (status bar visible, D2 short press to enable):
     Below the digits, a single line shows the current timezone and the
     result of the last NTP sync attempt:
       "UTC-5  NTP SYNC OK  14:23:05"
@@ -142,16 +160,18 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
     updated once per minute.  The sync countdown reflects the live adaptive
     interval, which may differ from the NTP_SYNC_INTERVAL setting.
 
-  Clean mode (status bar hidden, D2 short press):
-    The status bar is hidden.  If a battery is present, the timezone
-    label is shown left-justified and the battery percentage is shown
-    right-justified in the freed row, both at a larger size.  Without
-    a battery, the timezone label fills the full width at maximum size.
+  Status bar mode (D2 short press to toggle back off):
+    The status bar row is shown.  D2 short press returns to clean mode.
 
   Brightness adjust mode (D2 long press):
     All digit segments light up as a full-load brightness reference.
     The zone label area shows the current brightness level as a percentage.
     Short presses cycle through the five available levels.
+
+  Battery saver mode (automatic, battery only):
+    After BATTERY_SAVER_TIMEOUT seconds of button inactivity on battery
+    power, the display dims silently to minimum brightness.  Any button
+    press restores full brightness and resets the idle timer.
 
   Error mode:
     If WiFi or NTP fails, the clock digits dim and a bright red error
@@ -185,9 +205,10 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       (e.g. UTC+5:30, UTC+5:45, UTC+9:30).
 
   D2  (short press)
-      Toggles the status bar on and off.  When off, the timezone label
-      enlarges.  If a battery is present, the battery percentage is
-      shown alongside the timezone in the freed space.
+      Toggles the status bar on and off.  The clean display (status bar
+      hidden) is the default on boot.  When the status bar is hidden,
+      the timezone label enlarges; if a battery is present, the battery
+      percentage is shown alongside the timezone.
 
   D2  (hold 0.5s)
       Enters brightness adjustment mode.  All digit segments light up as
