@@ -444,8 +444,8 @@ group.append(batt_clean_label)
 # Color follows the active color scheme via COLOR_TRACKED_LABELS.
 # Hidden in all modes except date mode.
 date_label = label.Label(terminalio.FONT, text="", color=COLOR_SCHEMES[0][0], scale=2)
-date_label.anchor_point      = (0.5, 0.5)
-date_label.anchored_position = (120, UTC_Y_LARGE)
+date_label.anchor_point      = (0.0, 0.5)
+date_label.anchored_position = (30, UTC_Y_LARGE)
 date_label.hidden            = True
 group.append(date_label)
 
@@ -687,8 +687,10 @@ def _update_zone_label():
         # to force CircuitPython to recalculate centering after text changes.
         if sync_unix_secs > 0:   # only show if we have a valid date
             date_label.text              = _current_date_str()
-        date_label.anchor_point          = (0.5, 0.5)
-        date_label.anchored_position     = (120, UTC_Y_LARGE)
+        # All date strings are 15 chars at scale=2 (12px/char = 180px wide).
+        # Left-anchor at x=30 centres the text on the 240px display exactly.
+        date_label.anchor_point          = (0.0, 0.5)
+        date_label.anchored_position     = (30, UTC_Y_LARGE)
         date_label.hidden                = False
         zone_label.text                  = ""
         batt_clean_label.hidden          = True
@@ -1363,8 +1365,8 @@ while True:
             # Re-apply anchor each time to ensure centering stays correct.
             if date_mode and sync_unix_secs > 0:
                 date_label.text              = _current_date_str()
-                date_label.anchor_point      = (0.5, 0.5)
-                date_label.anchored_position = (120, UTC_Y_LARGE)
+                date_label.anchor_point      = (0.0, 0.5)
+                date_label.anchored_position = (30, UTC_Y_LARGE)
             # Update battery reading once per minute — level changes slowly
             if battery_monitor and m != last_battery_minute:
                 last_battery_minute = m
