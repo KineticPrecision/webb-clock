@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.20
+ webb-clock  v1.21
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -71,7 +71,8 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   NTP_SERVER
       Hostname of the primary NTP server.  Defaults to "time.nist.gov",
       a stratum 1 server operated by the US National Institute of Standards
-      and Technology.
+      and Technology.  Only WiFi credentials are required to run the clock;
+      all other settings have sensible defaults.
 
   NTP_SERVER_FALLBACK
       Hostname of the fallback NTP server, used automatically after
@@ -142,12 +143,17 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
  DISPLAY LAYOUT
 --------------------------------------------------------------------------------
 
-  Clean mode (default on boot, status bar hidden):
+  Clean mode (default on boot):
     Large 7-segment HH:MM:SS digits fill the upper portion of the screen.
     If a battery is present, the timezone label is left-justified and the
     battery percentage is right-justified in the row below the digits.
     Without a battery, the timezone label fills the full width at larger
-    size.  Toggle the status bar on with a D2 short press.
+    size.  Press D2 to cycle to Date or Status mode.
+
+  Date mode (D2 short press from Clean):
+    The row below the digits shows the current date as "MON  2026-03-30"
+    at scale 2, centered.  The date follows the active color scheme.
+    Rolls over at midnight automatically.
 
   Normal mode (status bar visible, D2 short press to enable):
     Below the digits, a single line shows the current timezone and the
@@ -218,10 +224,12 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       in settings.toml.
 
   D2  (short press)
-      Toggles the status bar on and off.  The clean display (status bar
-      hidden) is the default on boot.  When the status bar is hidden,
-      the timezone label enlarges; if a battery is present, the battery
-      percentage is shown alongside the timezone.
+      Cycles the bottom row through three modes:
+        Clean  — timezone label only (default on boot)
+        Date   — current date as "MON  2026-03-30"
+        Status — timezone + NTP sync result + status bar
+      In Clean mode, the timezone label enlarges; with a battery present,
+      the battery percentage is shown alongside it.
 
   D2  (hold 0.5s)
       Enters brightness adjustment mode.  All digit segments light up as

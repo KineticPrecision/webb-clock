@@ -7,6 +7,9 @@
 WIFI_SSID     = "your_ssid_here"
 WIFI_PASSWORD = "your_password_here"
 
+# ── The clock will run with only the above two lines filled in. ────────────
+# ── Everything below is optional and has sensible defaults.     ────────────
+
 # Primary NTP server hostname
 NTP_SERVER = "time.nist.gov"
 

@@ -2,7 +2,7 @@
 # webb_ntp.py
 # Custom NTP client for CircuitPython with sub-second timestamp precision.
 #
-# Version : 1.0  (2026-03-22)
+# Version : 1.1  (2026-03-25)
 # Author  : Spencer Webb
 # Developed with : Claude Sonnet 4.6 (Anthropic)
 # License : MIT
@@ -35,6 +35,7 @@
 #   import webb_ntp
 #   unix_secs, frac_ms, rtt_ms = webb_ntp.get_time(pool, "pool.ntp.org")
 #   h, m, s = webb_ntp.unix_to_hms(unix_secs)
+#   year, month, day, weekday = webb_ntp.unix_to_date(unix_secs)
 #
 # The caller is responsible for applying the half-RTT correction to get the
 # true time at the moment of the call:
@@ -198,3 +199,43 @@ def unix_to_hms(unix_seconds):
     minute = (total % 3600) // 60
     second = total % 60
     return hour, minute, second
+
+
+# Short names for months and weekdays — used by callers to format the date.
+MONTHS_SHORT = ("JAN","FEB","MAR","APR","MAY","JUN",
+                "JUL","AUG","SEP","OCT","NOV","DEC")
+DAYS_SHORT   = ("MON","TUE","WED","THU","FRI","SAT","SUN")
+
+
+def unix_to_date(unix_seconds):
+    """Extract UTC year, month, day, and weekday from a Unix epoch timestamp.
+
+    Uses the Gregorian calendar algorithm (Euclidean affine functions method)
+    which is correct for all dates from the Unix epoch onward.
+
+    Args:
+        unix_seconds (int): Seconds since January 1, 1970 UTC.
+
+    Returns:
+        Tuple of (year, month, day, weekday) where:
+          year     (int) : Four-digit year e.g. 2026
+          month    (int) : Month 1-12
+          day      (int) : Day of month 1-31
+          weekday  (int) : 0=Monday ... 6=Sunday
+                           (compatible with DAYS_SHORT index)
+    """
+    days    = unix_seconds // 86400
+    # Weekday: Unix epoch (Jan 1 1970) was a Thursday = index 3 in DAYS_SHORT
+    weekday = (days + 3) % 7
+    # Gregorian calendar decomposition
+    z   = days + 719468
+    era = z // 146097
+    doe = z - era * 146097                                  # day of era  [0, 146096]
+    yoe = (doe - doe//1460 + doe//36524 - doe//146096)//365 # year of era [0, 399]
+    y   = yoe + era * 400
+    doy = doe - (365*yoe + yoe//4 - yoe//100)              # day of year [0, 365]
+    mp  = (5*doy + 2) // 153                               # month prime  [0, 11]
+    d   = doy - (153*mp + 2)//5 + 1                        # day          [1, 31]
+    m   = mp + (3 if mp < 10 else -9)                      # month        [1, 12]
+    y  += (1 if m <= 2 else 0)
+    return y, m, d, weekday

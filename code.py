@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.20  (2026-03-25)
+# Version : 1.21  (2026-03-25)
 # Author  : Spencer Webb
 # Developed with : Claude Sonnet 4.6 (Anthropic)
 # License : MIT
@@ -63,7 +63,11 @@
 #   y=  5-95  Large 7-segment HH:MM:SS digits
 #   y=115     Timezone left-justified at scale 2 | battery % right-justified
 #
-# Display layout (status bar hidden, no battery, D2 short press):
+# Display layout (date mode, D2 short press cycle):
+#   y=  5-95  Large 7-segment HH:MM:SS digits
+#   y=115     "MON  2026-03-30" at scale 2, centered
+#
+# Display layout (status bar hidden, no battery, D2 short press cycle):
 #   y=  5-95  Large 7-segment HH:MM:SS digits
 #   y=115     Timezone label grows to scale 3, centered in freed space
 #
@@ -86,9 +90,12 @@
 #     D1 short press  — step to next timezone
 #     D1 hold 0.5s    — exit timezone edit mode
 #     30s inactivity  — exit timezone edit mode automatically
-#   D2 short press  — toggle status bar; zone label resizes and shows sync status
+#   D2 short press  — cycle bottom-line display: Clean → Date → Status → Clean
+#                      Clean : timezone only (default)
+#                      Date  : "MON  2026-03-30" at scale 2
+#                      Status: timezone + NTP sync status + status bar
 #   D2 hold 0.5s    — enter brightness adjustment mode
-#     D2 short press  — cycle through brightness levels (10/25/50/75/100%)
+#     D2 short press  — cycle through brightness levels (5/10/25/50/100%)
 #     D2 hold 0.5s    — exit brightness adjustment, restore prior display state
 #   Any button       — wake from battery saver mode (if active)
 #
@@ -128,7 +135,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.20"   # shown on the info screen
+VERSION = "1.21"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -432,6 +439,16 @@ batt_clean_label.anchored_position = (236, UTC_Y_LARGE)
 batt_clean_label.hidden            = True
 group.append(batt_clean_label)
 
+# -- Date label — shown in the zone label row in date mode ----------------
+# Displays "MON  2026-03-30" at scale 2, centered at UTC_Y_LARGE.
+# Color follows the active color scheme via COLOR_TRACKED_LABELS.
+# Hidden in all modes except date mode.
+date_label = label.Label(terminalio.FONT, text="", color=COLOR_SCHEMES[0][0], scale=2)
+date_label.anchor_point      = (0.5, 0.5)
+date_label.anchored_position = (120, UTC_Y_LARGE)
+date_label.hidden            = True
+group.append(date_label)
+
 # -- Error overlay labels — three lines of bright red text drawn directly over
 # the digit area (y=5-95).  On error the digit palette is dimmed to near-black
 # so the red text is clearly legible without touching display.brightness.
@@ -497,7 +514,7 @@ INFO_LABELS = (
 
 # Labels whose color must follow the active color scheme but are not on the
 # info screen — updated in apply_color_scheme() alongside INFO_LABELS.
-COLOR_TRACKED_LABELS = (batt_clean_label,)
+COLOR_TRACKED_LABELS = (batt_clean_label, date_label)
 
 # ---------------------------------------------------------------------------
 # Button setup
@@ -528,11 +545,15 @@ tz_edit_active     = False  # True while in timezone edit mode
 tz_edit_last_active= None   # monotonic time of last D1 activity in edit mode
 
 # D2 state
-# info_visible starts False so the clean screen is the default on boot.
-# The user can toggle the status bar on with a D2 short press.
-info_visible           = False  # whether the status bar is currently shown
+# Three bottom-line display modes cycled by D2 short press:
+#   clean mode  : info_visible=False, date_mode=False  (default)
+#   date mode   : info_visible=False, date_mode=True
+#   status mode : info_visible=True,  date_mode=False
+info_visible             = False  # whether the status bar is currently shown
+date_mode                = False  # True while the date line is shown
 brightness_adjust_active = False  # True while in brightness adjustment mode
-info_visible_saved     = False  # info_visible state saved on entering brightness adjust
+info_visible_saved       = False  # info_visible saved on entering brightness adjust
+date_mode_saved          = False  # date_mode saved on entering brightness adjust
 btn_d2_last            = False
 btn_d2_held_since      = None  # monotonic time D2 was pressed, or None if not pressed
 
@@ -646,6 +667,18 @@ def _update_zone_label():
         batt_clean_label.hidden      = True
         return
 
+    if date_mode:
+        # Date mode — show "MON  2026-03-30" in the zone label row.
+        # date_label is used; zone_label is hidden to free the space.
+        if sync_unix_secs > 0:   # only show if we have a valid date
+            date_label.text  = _current_date_str()
+        date_label.hidden    = False
+        zone_label.text      = ""
+        batt_clean_label.hidden = True
+        return
+
+    date_label.hidden = True   # hidden in all non-date modes
+
     if brightness_adjust_active:
         pct = round(BRIGHTNESS_LEVELS[brightness_index] * 100)
         zone_label.text              = "Brightness:  {}%".format(pct)
@@ -702,6 +735,23 @@ def _update_battery_labels():
         batt_str = "BATT ?%"
     batt_label.text       = batt_str
     batt_clean_label.text = batt_str
+
+# ---------------------------------------------------------------------------
+# Date display helper
+# ---------------------------------------------------------------------------
+def _current_date_str():
+    """Return the current date as "MON  2026-03-30" using the software clock.
+
+    Derives the current UTC date from sync_unix_secs plus elapsed seconds
+    since the last NTP sync, then applies webb_ntp.unix_to_date() to get
+    year/month/day/weekday.  Handles date rollover automatically — no
+    separate midnight detection is needed.
+    """
+    elapsed_s        = (time.monotonic_ns() - sync_mono_ns) // 1_000_000_000
+    current_unix     = sync_unix_secs + elapsed_s
+    y, m, d, weekday = webb_ntp.unix_to_date(current_unix)
+    return "{}  {:04d}-{:02d}-{:02d}".format(
+        webb_ntp.DAYS_SHORT[weekday], y, m, d)
 
 # ---------------------------------------------------------------------------
 # Debug helper
@@ -796,8 +846,9 @@ def _enter_brightness_adjust():
     lamp test so all segments are lit as a brightness reference, and shows
     the current brightness percentage in the zone label area.
     """
-    global brightness_adjust_active, info_visible_saved
+    global brightness_adjust_active, info_visible_saved, date_mode_saved
     info_visible_saved       = info_visible
+    date_mode_saved          = date_mode
     brightness_adjust_active = True
     sync_label.hidden        = True
     ping_label.hidden        = True
@@ -809,9 +860,10 @@ def _enter_brightness_adjust():
 
 def _exit_brightness_adjust():
     """Exit brightness adjustment mode and restore the prior display state."""
-    global brightness_adjust_active, info_visible, last_second
+    global brightness_adjust_active, info_visible, date_mode, last_second
     brightness_adjust_active = False
     info_visible             = info_visible_saved
+    date_mode                = date_mode_saved
     sync_label.hidden        = not info_visible
     ping_label.hidden        = not info_visible
     if battery_monitor:
@@ -990,10 +1042,11 @@ if battery_monitor:
 # software clock ticks from the true start of sync_s, not from the moment
 # the sync code happened to execute.
 # ---------------------------------------------------------------------------
-sync_h       = 0
-sync_m       = 0
-sync_s       = 0
-sync_mono_ns = 0   # integer nanosecond anchor for the above H:M:S
+sync_h        = 0
+sync_m        = 0
+sync_s        = 0
+sync_mono_ns  = 0   # integer nanosecond anchor for the above H:M:S
+sync_unix_secs = 0  # Unix timestamp of last sync; used to derive current date
 
 # Adaptive sync interval — starts at NTP_SYNC_INTERVAL and is adjusted
 # after each successful sync based on the measured clock correction.
@@ -1025,7 +1078,7 @@ def sync_ntp():
 
     Returns True on success, False on any error.
     """
-    global sync_h, sync_m, sync_s, sync_mono_ns
+    global sync_h, sync_m, sync_s, sync_mono_ns, sync_unix_secs
     global last_sync_ok, last_sync_ok_hms, last_correction_ms
     global _ntp_failures, _using_fallback
 
@@ -1068,7 +1121,8 @@ def sync_ntp():
             last_correction_ms = None   # no baseline yet
 
         # --- Update software clock ------------------------------------------
-        sync_h, sync_m, sync_s = webb_ntp.unix_to_hms(unix_secs + extra_secs)
+        sync_unix_secs = unix_secs + extra_secs   # stored for date computation
+        sync_h, sync_m, sync_s = webb_ntp.unix_to_hms(sync_unix_secs)
 
         # Store the monotonic anchor as integer nanoseconds — exact at any uptime.
         # Back-date by remain_ms so the clock counts from the true start of sync_s.
@@ -1297,6 +1351,9 @@ while True:
                 h = h % 12 or 12  # 0 -> 12, 13 -> 1, etc.
             draw_time(h, m, s)
             sync_label.text = "Sync {:4d}s".format(int(next_ntp_try - mono))
+            # Refresh date label every second in case we just crossed midnight
+            if date_mode and sync_unix_secs > 0:
+                date_label.text = _current_date_str()
             # Update battery reading once per minute — level changes slowly
             if battery_monitor and m != last_battery_minute:
                 last_battery_minute = m
@@ -1426,12 +1483,22 @@ while True:
                 brightness_index = (brightness_index + 1) % len(BRIGHTNESS_LEVELS)
                 _apply_brightness()             # cycle to next brightness level
             else:
-                info_visible      = not info_visible
+                # Cycle: clean → date → status → clean
+                if date_mode:
+                    # date → status
+                    date_mode    = False
+                    info_visible = True
+                elif info_visible:
+                    # status → clean
+                    info_visible = False
+                else:
+                    # clean → date
+                    date_mode = True
                 sync_label.hidden = not info_visible
                 ping_label.hidden = not info_visible
                 if battery_monitor:
                     batt_label.hidden = not info_visible
-                _update_zone_label()            # toggle status bar and clean-mode battery
+                _update_zone_label()
         # If held_since is None the hold already fired — do nothing on release
         btn_d2_held_since = None
     btn_d2_last = btn_d2_now
