@@ -659,6 +659,8 @@ def _update_zone_label():
     if tz_edit_active:
         # Timezone edit mode — show timezone in white at scale 2, centered.
         # White color signals to the user that edit mode is active.
+        # Hide date_label so it does not show through behind the edit display.
+        date_label.hidden            = True
         zone_label.text              = TIMEZONES[tz_index][1]
         zone_label.color             = 0xFFFFFF
         zone_label.scale             = 2
@@ -680,6 +682,7 @@ def _update_zone_label():
     date_label.hidden = True   # hidden in all non-date modes
 
     if brightness_adjust_active:
+        date_label.hidden            = True
         pct = round(BRIGHTNESS_LEVELS[brightness_index] * 100)
         zone_label.text              = "Brightness:  {}%".format(pct)
         zone_label.scale             = 2
