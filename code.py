@@ -669,6 +669,17 @@ def _update_zone_label():
         batt_clean_label.hidden      = True
         return
 
+    if brightness_adjust_active:
+        # Brightness adjust takes priority — always hides date and batt labels
+        date_label.hidden            = True
+        pct = round(BRIGHTNESS_LEVELS[brightness_index] * 100)
+        zone_label.text              = "Brightness:  {}%".format(pct)
+        zone_label.scale             = 2
+        zone_label.anchor_point      = (0.5, 0.5)
+        zone_label.anchored_position = (120, UTC_Y)
+        batt_clean_label.hidden      = True
+        return
+
     if date_mode:
         # Date mode — show "MON  2026-03-30" in the zone label row.
         # date_label is used; zone_label is hidden to free the space.
@@ -680,16 +691,6 @@ def _update_zone_label():
         return
 
     date_label.hidden = True   # hidden in all non-date modes
-
-    if brightness_adjust_active:
-        date_label.hidden            = True
-        pct = round(BRIGHTNESS_LEVELS[brightness_index] * 100)
-        zone_label.text              = "Brightness:  {}%".format(pct)
-        zone_label.scale             = 2
-        zone_label.anchor_point      = (0.5, 0.5)
-        zone_label.anchored_position = (120, UTC_Y)
-        batt_clean_label.hidden      = True
-        return
 
     tz_str = TIMEZONES[tz_index][1]
     if info_visible:
