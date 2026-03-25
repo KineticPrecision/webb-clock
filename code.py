@@ -839,6 +839,10 @@ def _exit_tz_edit():
     global tz_edit_active, tz_edit_last_active
     tz_edit_active      = False
     tz_edit_last_active = None
+    # Restore zone label color from the active color scheme before rebuilding
+    # the label — _update_zone_label() sets text/scale/position but does not
+    # reset color, so the white edit-mode color would otherwise persist.
+    zone_label.color = COLOR_SCHEMES[color_scheme_index][0]
     _update_zone_label()
 
 # ---------------------------------------------------------------------------
