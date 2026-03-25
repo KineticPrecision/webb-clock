@@ -683,11 +683,15 @@ def _update_zone_label():
     if date_mode:
         # Date mode — show "MON  2026-03-30" in the zone label row.
         # date_label is used; zone_label is hidden to free the space.
+        # anchor_point and anchored_position are re-applied every update
+        # to force CircuitPython to recalculate centering after text changes.
         if sync_unix_secs > 0:   # only show if we have a valid date
-            date_label.text  = _current_date_str()
-        date_label.hidden    = False
-        zone_label.text      = ""
-        batt_clean_label.hidden = True
+            date_label.text              = _current_date_str()
+        date_label.anchor_point          = (0.5, 0.5)
+        date_label.anchored_position     = (120, UTC_Y_LARGE)
+        date_label.hidden                = False
+        zone_label.text                  = ""
+        batt_clean_label.hidden          = True
         return
 
     date_label.hidden = True   # hidden in all non-date modes
@@ -1355,9 +1359,12 @@ while True:
                 h = h % 12 or 12  # 0 -> 12, 13 -> 1, etc.
             draw_time(h, m, s)
             sync_label.text = "Sync {:4d}s".format(int(next_ntp_try - mono))
-            # Refresh date label every second in case we just crossed midnight
+            # Refresh date label every second in case we just crossed midnight.
+            # Re-apply anchor each time to ensure centering stays correct.
             if date_mode and sync_unix_secs > 0:
-                date_label.text = _current_date_str()
+                date_label.text              = _current_date_str()
+                date_label.anchor_point      = (0.5, 0.5)
+                date_label.anchored_position = (120, UTC_Y_LARGE)
             # Update battery reading once per minute — level changes slowly
             if battery_monitor and m != last_battery_minute:
                 last_battery_minute = m
