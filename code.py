@@ -1273,26 +1273,26 @@ while True:
         # Falling edge — D0 signal went HIGH→LOW, button just pressed; start hold timer
         batt_saver_last_active = mono   # reset battery saver idle timer
         if battery_saver_active:
-            display.brightness    = BRIGHTNESS_LEVELS[brightness_index]
-            battery_saver_active  = False
-            _batt_saver_just_woke = True   # suppress this press's normal action
-        btn_d0_held_since = mono
+            display.brightness   = BRIGHTNESS_LEVELS[brightness_index]
+            battery_saver_active = False
+            btn_d0_held_since    = None   # leave held_since None so release fires no action
+        else:
+            btn_d0_held_since = mono
     elif not btn_d0_now and not btn_d0_last:
         # Still held — trigger info screen once hold threshold is reached
         if btn_d0_held_since is not None and not info_screen_active:
-            if not _batt_saver_just_woke and mono - btn_d0_held_since >= HOLD_THRESHOLD:
+            if mono - btn_d0_held_since >= HOLD_THRESHOLD:
                 show_info_screen(mono)
                 btn_d0_held_since = None  # clear so release does nothing extra
     elif btn_d0_now and not btn_d0_last:
         # Rising edge — D0 signal went LOW→HIGH, button just released
         if btn_d0_held_since is not None:
-            if not _batt_saver_just_woke:
-                # held_since is set: released before hold threshold — treat as quick press
-                if info_screen_active:
-                    hide_info_screen()
-                else:
-                    color_scheme_index = (color_scheme_index + 1) % len(COLOR_SCHEMES)
-                    apply_color_scheme()
+            # held_since is set: released before hold threshold — treat as quick press
+            if info_screen_active:
+                hide_info_screen()
+            else:
+                color_scheme_index = (color_scheme_index + 1) % len(COLOR_SCHEMES)
+                apply_color_scheme()
         # If held_since is None the hold already fired — do nothing on release
         btn_d0_held_since = None
     btn_d0_last = btn_d0_now
@@ -1309,6 +1309,7 @@ while True:
             tz_index    = (tz_index + 1) % len(TIMEZONES)
             last_second = -1   # invalidate cache so draw_time() runs immediately with new offset
             _update_zone_label()
+        _batt_saver_just_woke = False   # clear here — D1 is fully processed
     btn_d1_last = btn_d1_now
 
     # --- D2: hold = brightness adjust, quick press = toggle status bar ------
@@ -1326,14 +1327,15 @@ while True:
         # Rising edge — D2 signal went LOW→HIGH (active high), button just pressed; start hold timer
         batt_saver_last_active = mono   # reset battery saver idle timer
         if battery_saver_active:
-            display.brightness    = BRIGHTNESS_LEVELS[brightness_index]
-            battery_saver_active  = False
-            _batt_saver_just_woke = True   # suppress this press's normal action
-        btn_d2_held_since = mono
+            display.brightness   = BRIGHTNESS_LEVELS[brightness_index]
+            battery_saver_active = False
+            btn_d2_held_since    = None   # leave held_since None so release fires no action
+        else:
+            btn_d2_held_since = mono
     elif btn_d2_now and btn_d2_last:
         # Still held — trigger hold action once threshold is reached
         if btn_d2_held_since is not None:
-            if not _batt_saver_just_woke and mono - btn_d2_held_since >= HOLD_THRESHOLD:
+            if mono - btn_d2_held_since >= HOLD_THRESHOLD:
                 if brightness_adjust_active:
                     _exit_brightness_adjust()   # hold while in adjust = exit
                 else:
@@ -1342,21 +1344,19 @@ while True:
     elif not btn_d2_now and btn_d2_last:
         # Falling edge — D2 signal went HIGH→LOW, button just released
         if btn_d2_held_since is not None:
-            if not _batt_saver_just_woke:
-                # held_since is set: released before hold threshold — treat as quick press
-                if brightness_adjust_active:
-                    brightness_index = (brightness_index + 1) % len(BRIGHTNESS_LEVELS)
-                    _apply_brightness()             # cycle to next brightness level
-                else:
-                    info_visible      = not info_visible
-                    sync_label.hidden = not info_visible
-                    ping_label.hidden = not info_visible
-                    if battery_monitor:
-                        batt_label.hidden = not info_visible
-                    _update_zone_label()            # toggle status bar and clean-mode battery
+            # held_since is set: released before hold threshold — treat as quick press
+            if brightness_adjust_active:
+                brightness_index = (brightness_index + 1) % len(BRIGHTNESS_LEVELS)
+                _apply_brightness()             # cycle to next brightness level
+            else:
+                info_visible      = not info_visible
+                sync_label.hidden = not info_visible
+                ping_label.hidden = not info_visible
+                if battery_monitor:
+                    batt_label.hidden = not info_visible
+                _update_zone_label()            # toggle status bar and clean-mode battery
         # If held_since is None the hold already fired — do nothing on release
         btn_d2_held_since = None
     btn_d2_last = btn_d2_now
 
-    _batt_saver_just_woke = False   # clear wake flag after all button logic has run
     time.sleep(0.02)  # ~50 Hz — responsive to buttons, easy on the CPU
