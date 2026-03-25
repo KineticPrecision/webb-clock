@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.19  (2026-03-25)
+# Version : 1.20  (2026-03-25)
 # Author  : Spencer Webb
 # Developed with : Claude Sonnet 4.6 (Anthropic)
 # License : MIT
@@ -82,7 +82,10 @@
 #   D0 short press  — cycle display color (Green / Red / Blue)
 #   D0 hold 0.5s    — show system info screen (stays on after release)
 #   D0 short press  — dismiss info screen and return to clock
-#   D1 short press  — advance to next timezone
+#   D1 hold 0.5s    — enter timezone edit mode (zone label turns white)
+#     D1 short press  — step to next timezone
+#     D1 hold 0.5s    — exit timezone edit mode
+#     30s inactivity  — exit timezone edit mode automatically
 #   D2 short press  — toggle status bar; zone label resizes and shows sync status
 #   D2 hold 0.5s    — enter brightness adjustment mode
 #     D2 short press  — cycle through brightness levels (10/25/50/75/100%)
@@ -125,7 +128,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.19"   # shown on the info screen
+VERSION = "1.20"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -182,8 +185,10 @@ INFO_COLOR = (_ib << 16) | (_ib << 8) | _ib
 # Brightness adjustment levels — cycled by D2 short press during adjustment.
 # Expressed as fractions (0.0-1.0) matching display.brightness units.
 # The startup level is the entry in this tuple closest to BRIGHTNESS.
+# This is a roughly logarithmic sequence, matching human brightness perception
+# so each step feels like an equal change to the eye.
 # ---------------------------------------------------------------------------
-BRIGHTNESS_LEVELS = (0.10, 0.25, 0.50, 0.75, 1.00)
+BRIGHTNESS_LEVELS = (0.05, 0.10, 0.25, 0.50, 1.00)
 
 def _closest_brightness_index(value):
     """Return the index in BRIGHTNESS_LEVELS nearest to value."""
@@ -509,6 +514,7 @@ btn_d2 = digitalio.DigitalInOut(board.D2)
 btn_d2.switch_to_input(pull=digitalio.Pull.DOWN)
 
 HOLD_THRESHOLD     = 0.5   # seconds a button must be held to trigger hold action
+TZ_EDIT_TIMEOUT    = 30    # seconds of D1 inactivity before auto-exiting timezone edit mode
 
 # D0 state
 info_screen_active = False  # True while the full-screen info overlay is shown
@@ -517,6 +523,9 @@ btn_d0_held_since  = None  # monotonic time D0 was pressed, or None if not press
 
 # D1 state
 btn_d1_last        = False
+btn_d1_held_since  = None   # monotonic time D1 was pressed, or None if not pressed
+tz_edit_active     = False  # True while in timezone edit mode
+tz_edit_last_active= None   # monotonic time of last D1 activity in edit mode
 
 # D2 state
 # info_visible starts False so the clean screen is the default on boot.
@@ -626,6 +635,17 @@ def _update_zone_label():
     Called after any sync attempt, timezone change, D2 toggle, brightness
     level change, or battery reading update.
     """
+    if tz_edit_active:
+        # Timezone edit mode — show timezone in white at scale 2, centered.
+        # White color signals to the user that edit mode is active.
+        zone_label.text              = TIMEZONES[tz_index][1]
+        zone_label.color             = 0xFFFFFF
+        zone_label.scale             = 2
+        zone_label.anchor_point      = (0.5, 0.5)
+        zone_label.anchored_position = (120, UTC_Y)
+        batt_clean_label.hidden      = True
+        return
+
     if brightness_adjust_active:
         pct = round(BRIGHTNESS_LEVELS[brightness_index] * 100)
         zone_label.text              = "Brightness:  {}%".format(pct)
@@ -802,6 +822,23 @@ def _exit_brightness_adjust():
 def _apply_brightness():
     """Apply the current brightness_index level to the display and update the label."""
     display.brightness = BRIGHTNESS_LEVELS[brightness_index]
+    _update_zone_label()
+
+# ---------------------------------------------------------------------------
+# Timezone edit mode helpers
+# ---------------------------------------------------------------------------
+def _enter_tz_edit():
+    """Enter timezone edit mode — zone label turns white to signal edit state."""
+    global tz_edit_active, tz_edit_last_active
+    tz_edit_active      = True
+    tz_edit_last_active = time.monotonic()
+    _update_zone_label()
+
+def _exit_tz_edit():
+    """Exit timezone edit mode — zone label returns to current color scheme."""
+    global tz_edit_active, tz_edit_last_active
+    tz_edit_active      = False
+    tz_edit_last_active = None
     _update_zone_label()
 
 # ---------------------------------------------------------------------------
@@ -1241,8 +1278,9 @@ while True:
             retry_s      = min(retry_s * 2, NTP_RETRY_MAX)
             _dbg("Sync failed  next retry in {}s  backoff now {}s".format(
                 int(retry_s / 2), int(retry_s)))
-        # Only update zone label if not in brightness adjust (which manages its own label)
-        if not brightness_adjust_active:
+        # Only update zone label if not in brightness adjust or timezone edit
+        # (both modes manage the zone label themselves)
+        if not brightness_adjust_active and not tz_edit_active:
             _update_zone_label()
 
     # --- Clock display ------------------------------------------------------
@@ -1259,7 +1297,8 @@ while True:
             if battery_monitor and m != last_battery_minute:
                 last_battery_minute = m
                 _update_battery_labels()
-                _update_zone_label()   # refresh clean-mode batt_clean_label if visible
+                if not tz_edit_active:   # don't stomp edit mode label
+                    _update_zone_label()
 
     # --- D0: hold = info screen, quick press = color cycle or dismiss --------
     # Pull.UP: resting state True (HIGH), pressed False (LOW)
@@ -1297,19 +1336,53 @@ while True:
         btn_d0_held_since = None
     btn_d0_last = btn_d0_now
 
-    # --- D1: advance timezone on rising edge --------------------------------
+    # --- D1: hold = enter/exit timezone edit, short press = step timezone ---
+    # Pull.DOWN: resting state False (LOW), pressed True (HIGH)
+    #
+    # State machine:
+    #   Not in edit mode:
+    #     Short press  — ignored (prevents accidental timezone changes)
+    #     Hold 0.5s    — enter timezone edit mode (zone label turns white)
+    #   In edit mode:
+    #     Short press  — step to next timezone
+    #     Hold 0.5s    — exit timezone edit mode
+    #     30s inactivity — exit timezone edit mode automatically
     btn_d1_now = btn_d1.value
     if btn_d1_now and not btn_d1_last:
-        batt_saver_last_active = mono   # reset battery saver idle timer
+        # Rising edge — button just pressed; start hold timer
+        batt_saver_last_active = mono
         if battery_saver_active:
             display.brightness    = BRIGHTNESS_LEVELS[brightness_index]
             battery_saver_active  = False
-            _batt_saver_just_woke = True   # suppress this press's normal action
+            _batt_saver_just_woke = True
         if not _batt_saver_just_woke:
-            tz_index    = (tz_index + 1) % len(TIMEZONES)
-            last_second = -1   # invalidate cache so draw_time() runs immediately with new offset
-            _update_zone_label()
-        _batt_saver_just_woke = False   # clear here — D1 is fully processed
+            btn_d1_held_since = mono
+        _batt_saver_just_woke = False
+    elif btn_d1_now and btn_d1_last:
+        # Still held — check for hold threshold
+        if btn_d1_held_since is not None:
+            if mono - btn_d1_held_since >= HOLD_THRESHOLD:
+                if tz_edit_active:
+                    _exit_tz_edit()     # hold while in edit = exit
+                else:
+                    _enter_tz_edit()    # hold normally = enter edit
+                btn_d1_held_since = None  # clear so release does nothing extra
+    elif not btn_d1_now and btn_d1_last:
+        # Falling edge — button just released
+        if btn_d1_held_since is not None:
+            # Released before hold threshold — treat as quick press
+            if tz_edit_active:
+                # Step timezone and reset inactivity timer
+                tz_index            = (tz_index + 1) % len(TIMEZONES)
+                last_second         = -1   # force immediate display refresh
+                tz_edit_last_active = mono
+                _update_zone_label()
+            # Short press outside edit mode is intentionally ignored
+        btn_d1_held_since = None
+    # --- Timezone edit mode inactivity timeout ----------------------------
+    if tz_edit_active and tz_edit_last_active is not None:
+        if mono - tz_edit_last_active >= TZ_EDIT_TIMEOUT:
+            _exit_tz_edit()
     btn_d1_last = btn_d1_now
 
     # --- D2: hold = brightness adjust, quick press = toggle status bar ------

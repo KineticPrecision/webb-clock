@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.19
+ webb-clock  v1.20
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -200,9 +200,22 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       Dismisses the info screen and returns to the clock.
 
   D1  (short press)
-      Steps forward through all available timezone offsets, from UTC-12
-      to UTC+14, including all fractional-hour zones in current use
-      (e.g. UTC+5:30, UTC+5:45, UTC+9:30).
+      No action — short press is intentionally ignored to prevent
+      accidental timezone changes.
+
+  D1  (hold 0.5s)
+      Enters timezone edit mode.  The timezone label turns white to
+      indicate edit mode is active.  Short presses of D1 then step
+      forward through all available timezone offsets, from UTC-12 to
+      UTC+14, including all fractional-hour zones (e.g. UTC+5:30,
+      UTC+5:45, UTC+9:30).
+
+  D1  (hold 0.5s while in timezone edit)
+      Exits timezone edit mode.  The timezone label returns to the
+      current color scheme color.  The selected timezone is saved.
+      Edit mode also exits automatically after 30 seconds of
+      inactivity.  Note: a power cycle reverts to DEFAULT_TZ_OFFSET
+      in settings.toml.
 
   D2  (short press)
       Toggles the status bar on and off.  The clean display (status bar
@@ -213,7 +226,9 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   D2  (hold 0.5s)
       Enters brightness adjustment mode.  All digit segments light up as
       a reference.  Short presses of D2 cycle through five brightness
-      levels: 10% / 25% / 50% / 75% / 100%.
+      levels: 5% / 10% / 25% / 50% / 100%.  The sequence is
+      roughly logarithmic, so each step feels like an equal change
+      to the eye.
 
   D2  (hold 0.5s while in brightness adjust)
       Exits brightness adjustment and returns to the previous display state.
