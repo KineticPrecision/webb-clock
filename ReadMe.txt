@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.21
+ webb-clock  v1.22
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -198,16 +198,21 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
 
   D0  (hold 0.5s)
       Opens the System Info screen, which remains visible after release.
-      Displays: firmware version, NTP server, baseline and current adaptive
-      sync interval with fuzz, WiFi SSID, IP address, MAC address, battery
-      level (if present), free memory, and uptime.
+      Displays: firmware version, NTP server (or SYNC OFF if sync is
+      disabled), baseline and current adaptive sync interval with fuzz,
+      WiFi SSID, IP address, MAC address, battery level (if present),
+      free memory, and uptime.
 
   D0  (short press while info screen is showing)
       Dismisses the info screen and returns to the clock.
 
   D1  (short press)
-      No action — short press is intentionally ignored to prevent
-      accidental timezone changes.
+      Toggles NTP sync on and off.  When sync is off, WiFi is disabled
+      to conserve battery power.  The clock continues running normally
+      on the software clock.  The colons change to the next color in
+      the color scheme rotation to indicate sync is off.  Press D1
+      again to re-enable WiFi and resume syncing — the seconds digits
+      briefly show dashes while reconnecting, then resume normally.
 
   D1  (hold 0.5s)
       Enters timezone edit mode.  The timezone label turns white to

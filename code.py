@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.21  (2026-03-25)
+# Version : 1.22  (2026-03-25)
 # Author  : Spencer Webb
 # Developed with : Claude Sonnet 4.6 (Anthropic)
 # License : MIT
@@ -86,6 +86,7 @@
 #   D0 short press  — cycle display color (Green / Red / Blue)
 #   D0 hold 0.5s    — show system info screen (stays on after release)
 #   D0 short press  — dismiss info screen and return to clock
+#   D1 short press  — toggle NTP sync on/off (colons change color when sync off)
 #   D1 hold 0.5s    — enter timezone edit mode (zone label turns white)
 #     D1 short press  — step to next timezone
 #     D1 hold 0.5s    — exit timezone edit mode
@@ -135,7 +136,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.21"   # shown on the info screen
+VERSION = "1.22"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -336,6 +337,7 @@ DIGIT_SEGS = [
     (True,  False, True,  False, False, True,  False),  # 7
     (True,  True,  True,  True,  True,  True,  True),   # 8
     (True,  True,  True,  True,  False, True,  True),   # 9
+    (False, False, False, True,  False, False, False),  # 10 dash (middle segment only)
 ]
 
 SEGS = _seg_rects(DW, DH, ST)
@@ -364,16 +366,19 @@ display            = board.DISPLAY
 display.rotation   = 0
 display.brightness = BRIGHTNESS
 
-# Shared three-entry palette used by both the clock bitmap and info screen bitmap:
+# Shared four-entry palette used by both the clock bitmap and info screen bitmap:
 #   index 0 = black background
 #   index 1 = active segment / foreground text  (updated by apply_color_scheme)
 #   index 2 = inactive segment shadow           (updated by apply_color_scheme)
-# Since the clock bitmap uses palette indices, changing palette[1] and palette[2]
-# immediately recolors all drawn segments — no redraw required.
-palette    = displayio.Palette(3)
+#   index 3 = sync-off colon color — next color in COLOR_SCHEMES rotation
+#             so colons are visually distinct from digits when NTP sync is off
+# Since the clock bitmap uses palette indices, changing palette entries
+# immediately recolors all drawn pixels — no redraw required.
+palette    = displayio.Palette(4)
 palette[0] = 0x000000
 palette[1] = COLOR_SCHEMES[0][0]  # green on
 palette[2] = COLOR_SCHEMES[0][1]  # green shadow
+palette[3] = COLOR_SCHEMES[1][0]  # red — next color for sync-off colons
 
 # Full-screen bitmap; all digit and colon drawing goes directly into this
 bmp  = displayio.Bitmap(240, 135, 3)
@@ -557,6 +562,10 @@ date_mode_saved          = False  # date_mode saved on entering brightness adjus
 btn_d2_last            = False
 btn_d2_held_since      = None  # monotonic time D2 was pressed, or None if not pressed
 
+# NTP sync enabled flag — toggled by D1 short press.
+# When False, WiFi is disabled and NTP scheduling is suspended.
+sync_ntp_enabled = True
+
 # Sync status — updated by sync_ntp() on every attempt.
 # last_sync_ok_hms is recorded in local timezone.
 last_sync_ok_hms = "--:--:--"  # time of last good sync ("--:--:--" until first sync)
@@ -575,12 +584,14 @@ def _draw_digit(digit, ox, oy):
     for i, (sx, sy, sw, sh) in enumerate(SEGS):
         _fill_rect(ox + sx, oy + sy, sw, sh, 1 if segs_on[i] else 2)
 
-def _draw_colon(ox, oy):
-    """Draw a colon glyph (two square dots) at bitmap origin (ox, oy)."""
+def _draw_colon(ox, oy, color_idx=1):
+    """Draw a colon glyph (two square dots) at bitmap origin (ox, oy).
+    color_idx selects the palette entry: 1=normal, 3=sync-off.
+    """
     dot = ST + 1
     cx  = ox + CW // 2 - dot // 2
-    _fill_rect(cx, oy +     DH // 3 - dot // 2, dot, dot, 1)
-    _fill_rect(cx, oy + 2 * DH // 3 - dot // 2, dot, dot, 1)
+    _fill_rect(cx, oy +     DH // 3 - dot // 2, dot, dot, color_idx)
+    _fill_rect(cx, oy + 2 * DH // 3 - dot // 2, dot, dot, color_idx)
 
 def _draw_lamp_test():
     """Light all segments on all six digit slots (digit 8 = all segments on).
@@ -622,8 +633,11 @@ def apply_color_scheme():
     explicitly since they are not palette-driven.
     """
     on_color, off_color = COLOR_SCHEMES[color_scheme_index]
+    # palette[3] = next color in rotation — used for sync-off colons
+    next_idx        = (color_scheme_index + 1) % len(COLOR_SCHEMES)
     palette[1]       = on_color
     palette[2]       = off_color
+    palette[3]       = COLOR_SCHEMES[next_idx][0]
     zone_label.color = on_color
     for lbl in INFO_LABELS:
         lbl.color = on_color
@@ -700,7 +714,9 @@ def _update_zone_label():
 
     tz_str = TIMEZONES[tz_index][1]
     if info_visible:
-        if last_sync_ok:
+        if not sync_ntp_enabled:
+            zone_label.text = "{}  SYNC OFF".format(tz_str)
+        elif last_sync_ok:
             zone_label.text = "{}  NTP SYNC OK  {}".format(tz_str, last_sync_ok_hms)
         else:
             zone_label.text = "{}  NTP SYNC FAIL  (OK {})".format(tz_str, last_sync_ok_hms)
@@ -887,6 +903,55 @@ def _apply_brightness():
     _update_zone_label()
 
 # ---------------------------------------------------------------------------
+# NTP sync toggle helpers
+# ---------------------------------------------------------------------------
+def _enter_sync_off():
+    """Disable WiFi and suspend NTP syncing.
+
+    Colons are redrawn with palette[3] (next color in rotation) so the
+    display gives a clear visual indication that sync is off.
+    The software clock continues running normally on the last good fix.
+    """
+    global sync_ntp_enabled
+    sync_ntp_enabled = False
+    wifi.radio.enabled = False
+    # Redraw colons with sync-off color (palette index 3)
+    _draw_colon(COLON_X[0], TOP, 3)
+    _draw_colon(COLON_X[1], TOP, 3)
+    _dbg("Sync OFF — WiFi disabled")
+    _update_zone_label()
+
+def _exit_sync_off():
+    """Re-enable WiFi, reconnect, and resume NTP syncing.
+
+    Seconds digits show dashes during the blocking WiFi reconnect so the
+    user can see something is happening.  After reconnecting the socket
+    pool is recreated, the DNS cache is cleared, and an immediate NTP sync
+    is scheduled.
+    """
+    global sync_ntp_enabled, pool, next_ntp_try
+    # Show dashes in seconds slots while reconnecting
+    _draw_digit(10, DIGIT_X[4], TOP)
+    _draw_digit(10, DIGIT_X[5], TOP)
+    _last_digits[4] = -1   # force redraw when clock resumes
+    _last_digits[5] = -1
+    # Restore colons to normal color before reconnect
+    _draw_colon(COLON_X[0], TOP, 1)
+    _draw_colon(COLON_X[1], TOP, 1)
+    _dbg("Sync ON — reconnecting WiFi...")
+    try:
+        wifi.radio.enabled = True
+        wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
+        pool = socketpool.SocketPool(wifi.radio)
+        webb_ntp._dns_cache = None   # clear cached DNS so server is re-resolved
+        sync_ntp_enabled    = True
+        next_ntp_try        = time.monotonic()  # trigger immediate sync
+        _dbg("WiFi reconnected  IP: {}".format(wifi.radio.ipv4_address))
+    except Exception as e:
+        show_error("WiFi reconnect failed: " + str(e))
+    _update_zone_label()
+
+# ---------------------------------------------------------------------------
 # Timezone edit mode helpers
 # ---------------------------------------------------------------------------
 def _enter_tz_edit():
@@ -931,7 +996,7 @@ def show_info_screen(mono):
         up_secs // 3600, (up_secs % 3600) // 60, up_secs % 60)
 
     info_title_lbl.text  = "-- System Info v{} --".format(VERSION)
-    info_ntp_lbl.text    = "NTP:  " + NTP_SERVER
+    info_ntp_lbl.text    = "NTP:  SYNC OFF" if not sync_ntp_enabled else "NTP:  " + NTP_SERVER
     info_fuzz_lbl.text   = "Intv: {}s now {}s  Fuzz: {}%".format(
                                NTP_SYNC_INTERVAL, int(_adaptive_interval), NTP_SYNC_FUZZ_PCT)
     info_ssid_lbl.text   = "WiFi: " + (WIFI_SSID or "?")
@@ -1278,7 +1343,7 @@ while True:
         batt_saver_last_active = mono
 
     # --- Periodic NTP sync with backoff on failure --------------------------
-    if mono >= next_ntp_try:
+    if sync_ntp_enabled and mono >= next_ntp_try:
         ok = sync_ntp()
         if ok:
             have_time    = True
@@ -1451,7 +1516,12 @@ while True:
                 last_second         = -1   # force immediate display refresh
                 tz_edit_last_active = mono
                 _update_zone_label()
-            # Short press outside edit mode is intentionally ignored
+            else:
+                # Toggle NTP sync on/off
+                if sync_ntp_enabled:
+                    _enter_sync_off()
+                else:
+                    _exit_sync_off()
         btn_d1_held_since = None
     # --- Timezone edit mode inactivity timeout ----------------------------
     if tz_edit_active and tz_edit_last_active is not None:
