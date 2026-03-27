@@ -115,9 +115,12 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   BATTERY_SAVER_TIMEOUT
       When running on battery (not charging), the display dims to minimum
       brightness after this many seconds of button inactivity.  Any button
-      press restores full brightness and resets the timer.  Charging is
-      detected via the battery monitor charge rate (works with wall chargers
-      as well as USB data connections).  Set to 0 to disable.  Default: 60.
+      press restores full brightness and resets the timer.  External power
+      is detected using a trimmed mean of the battery charge rate with
+      hysteresis (±0.5%/hr dead band), combined with a cell_percent < 95
+      guard to avoid false triggers on a fully-charged unit.  USB data
+      connections always suppress battery saver regardless of charge rate.
+      Set to 0 to disable.  Default: 60.
 
   DEBUG
       Set to 1 to enable timestamped verbose output on the serial console.
@@ -132,7 +135,8 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
              resolution; "n/a" on first sync), uptime, free memory,
              and battery percentage + voltage (if present)
           2) WHAT WAS DECIDED: current adaptive interval, direction
-             (EXTENDED / SHORTENED / NO CHANGE with before→after on changes),
+             (EXTENDED / SHORTENED / NO CHANGE with before→after on changes,
+             or AT CEILING / AT FLOOR when already at the interval bounds),
              and dead band bounds in ms
           3) WHAT IS NEXT: local clock time of next scheduled sync
              and seconds until then
@@ -161,14 +165,12 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
     result of the last NTP sync attempt:
       "UTC-5  NTP SYNC OK  14:23:05"
       "UTC-5  NTP SYNC FAIL  (OK 14:23:05)"
+      "UTC-5  SYNC OFF"  (when NTP sync is disabled via D1)
     The bottom status bar shows the time until the next sync on the left,
     the battery level in the centre (if a battery is present), and the
     last NTP round-trip (ping) time on the right.  The battery level is
     updated once per minute.  The sync countdown reflects the live adaptive
     interval, which may differ from the NTP_SYNC_INTERVAL setting.
-
-  Status bar mode (D2 short press to toggle back off):
-    The status bar row is shown.  D2 short press returns to clean mode.
 
   Brightness adjust mode (D2 long press):
     All digit segments light up as a full-load brightness reference.
@@ -269,9 +271,9 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   reported.  The correction is compared against a dead band centred on
   NTP_ADAPT_THRESHOLD with a width of NTP_ADAPT_BAND percent:
 
-    Below dead band  (correction small)  → extend interval by 20%
+    Below dead band  (correction small)  → extend interval by 20% (AT CEILING if already at max)
     Inside dead band (correction typical) → leave interval unchanged
-    Above dead band  (correction large)  → shorten interval by 20%
+    Above dead band  (correction large)  → shorten interval by 20% (AT FLOOR if already at min)
 
   The dead band prevents the system from hunting — without it, a
   correction consistently near the threshold would cause the interval
