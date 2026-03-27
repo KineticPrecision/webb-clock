@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.22
+ webb-clock  v1.23
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -113,10 +113,11 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       with the D1 button.  Default: 0 (UTC).
 
   BATTERY_SAVER_TIMEOUT
-      When running on battery only (no USB power), the display dims to
-      minimum brightness after this many seconds of button inactivity.
-      Any button press restores full brightness and resets the timer.
-      Set to 0 to disable.  Default: 60 seconds.
+      When running on battery (not charging), the display dims to minimum
+      brightness after this many seconds of button inactivity.  Any button
+      press restores full brightness and resets the timer.  Charging is
+      detected via the battery monitor charge rate (works with wall chargers
+      as well as USB data connections).  Set to 0 to disable.  Default: 60.
 
   DEBUG
       Set to 1 to enable timestamped verbose output on the serial console.
@@ -151,9 +152,9 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
     size.  Press D2 to cycle to Date or Status mode.
 
   Date mode (D2 short press from Clean):
-    The row below the digits shows the current date as "MON  2026-03-30"
-    at scale 2, centered.  The date follows the active color scheme.
-    Rolls over at midnight automatically.
+    The row below the digits shows the current date as "2026-03-30  MON"
+    at scale 2, centered.  The date follows the active color scheme and
+    rolls over at local midnight automatically.
 
   Normal mode (status bar visible, D2 short press to enable):
     Below the digits, a single line shows the current timezone and the
@@ -231,7 +232,7 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   D2  (short press)
       Cycles the bottom row through three modes:
         Clean  — timezone label only (default on boot)
-        Date   — current date as "MON  2026-03-30"
+        Date   — current date as "2026-03-30  MON"
         Status — timezone + NTP sync result + status bar
       In Clean mode, the timezone label enlarges; with a battery present,
       the battery percentage is shown alongside it.

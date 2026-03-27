@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.22  (2026-03-25)
+# Version : 1.23  (2026-03-25)
 # Author  : Spencer Webb
 # Developed with : Claude Sonnet 4.6 (Anthropic)
 # License : MIT
@@ -65,7 +65,7 @@
 #
 # Display layout (date mode, D2 short press cycle):
 #   y=  5-95  Large 7-segment HH:MM:SS digits
-#   y=115     "MON  2026-03-30" at scale 2, centered
+#   y=115     "2026-03-30  MON" at scale 2, centered
 #
 # Display layout (status bar hidden, no battery, D2 short press cycle):
 #   y=  5-95  Large 7-segment HH:MM:SS digits
@@ -93,7 +93,7 @@
 #     30s inactivity  — exit timezone edit mode automatically
 #   D2 short press  — cycle bottom-line display: Clean → Date → Status → Clean
 #                      Clean : timezone only (default)
-#                      Date  : "MON  2026-03-30" at scale 2
+#                      Date  : "2026-03-30  MON" at scale 2
 #                      Status: timezone + NTP sync status + status bar
 #   D2 hold 0.5s    — enter brightness adjustment mode
 #     D2 short press  — cycle through brightness levels (5/10/25/50/100%)
@@ -136,18 +136,18 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.22"   # shown on the info screen
+VERSION = "1.23"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
 # ---------------------------------------------------------------------------
 WIFI_SSID         = os.getenv("WIFI_SSID")
 WIFI_PASSWORD     = os.getenv("WIFI_PASSWORD")
-NTP_SERVER         = os.getenv("NTP_SERVER",         "time.nist.gov")
-NTP_SERVER_FALLBACK= os.getenv("NTP_SERVER_FALLBACK", "pool.ntp.org")
-NTP_FALLBACK_AFTER = 3    # switch to fallback after this many consecutive failures
-NTP_SYNC_INTERVAL  = int(os.getenv("NTP_SYNC_INTERVAL", "3600"))  # seconds between syncs
-NTP_SYNC_FUZZ_PCT = int(os.getenv("NTP_SYNC_FUZZ_PCT", "10"))  # sync interval fuzz as a percentage (0-50)
+NTP_SERVER          = os.getenv("NTP_SERVER",          "time.nist.gov")
+NTP_SERVER_FALLBACK = os.getenv("NTP_SERVER_FALLBACK", "pool.ntp.org")
+NTP_FALLBACK_AFTER  = 3    # switch to fallback after this many consecutive failures
+NTP_SYNC_INTERVAL   = int(os.getenv("NTP_SYNC_INTERVAL",  "3600"))  # seconds between syncs
+NTP_SYNC_FUZZ_PCT   = int(os.getenv("NTP_SYNC_FUZZ_PCT",  "10"))   # sync interval fuzz as % (0-50)
 NTP_RETRY_BASE    = 5     # seconds before first retry after a failed sync
 NTP_RETRY_MAX     = 300   # cap on retry backoff (5 minutes)
 
@@ -177,12 +177,12 @@ NTP_ADAPT_BAND      = 20     # % — dead band is +/- this % of threshold
 NTP_ADAPT_STEP      = 0.20   # 20% interval adjustment per sync
 NTP_INTERVAL_MIN    = 300    # 5 minutes
 NTP_INTERVAL_MAX    = 10800  # 3 hours
-TIME_FORMAT       = int(os.getenv("TIME_FORMAT",       "24"))    # 12 or 24
-DEBUG                  = int(os.getenv("DEBUG",                  "0"))    # 1 = verbose serial output
-BRIGHTNESS             = float(os.getenv("BRIGHTNESS",          "1.0"))  # backlight level 0.0-1.0
-BATTERY_SAVER_TIMEOUT  = int(os.getenv("BATTERY_SAVER_TIMEOUT", "60"))   # seconds idle on battery before dimming; 0=disabled
-INFO_BRIGHTNESS   = float(os.getenv("INFO_BRIGHTNESS", "1.0"))  # status bar text 0.0-1.0
-DEFAULT_TZ_OFFSET = int(os.getenv("DEFAULT_TZ_OFFSET", "0")) * 60  # hours -> minutes
+TIME_FORMAT             = int(os.getenv("TIME_FORMAT",             "24"))   # 12 or 24
+DEBUG                   = int(os.getenv("DEBUG",                   "0"))    # 1 = verbose serial output
+BRIGHTNESS              = float(os.getenv("BRIGHTNESS",            "1.0"))  # backlight level 0.0-1.0
+BATTERY_SAVER_TIMEOUT   = int(os.getenv("BATTERY_SAVER_TIMEOUT",  "60"))   # seconds idle on battery before dimming; 0=disabled
+INFO_BRIGHTNESS         = float(os.getenv("INFO_BRIGHTNESS",       "1.0"))  # status bar text 0.0-1.0
+DEFAULT_TZ_OFFSET       = int(os.getenv("DEFAULT_TZ_OFFSET",       "0")) * 60  # hours -> minutes
 
 # Status bar text color: a neutral grey scaled by INFO_BRIGHTNESS.
 # This lets the status bar be dimmed independently of the backlight.
@@ -380,8 +380,9 @@ palette[1] = COLOR_SCHEMES[0][0]  # green on
 palette[2] = COLOR_SCHEMES[0][1]  # green shadow
 palette[3] = COLOR_SCHEMES[1][0]  # red — next color for sync-off colons
 
-# Full-screen bitmap; all digit and colon drawing goes directly into this
-bmp  = displayio.Bitmap(240, 135, 3)
+# Full-screen bitmap; all digit and colon drawing goes directly into this.
+# value_count=4 to support palette indices 0-3 (index 3 = sync-off colon color).
+bmp  = displayio.Bitmap(240, 135, 4)
 tile = displayio.TileGrid(bmp, pixel_shader=palette)
 
 # Root display group for the clock face
@@ -695,7 +696,7 @@ def _update_zone_label():
         return
 
     if date_mode:
-        # Date mode — show "MON  2026-03-30" in the zone label row.
+        # Date mode — show "2026-03-30  MON" in the zone label row.
         # date_label is used; zone_label is hidden to free the space.
         # anchor_point and anchored_position are re-applied every update
         # to force CircuitPython to recalculate centering after text changes.
@@ -745,9 +746,11 @@ def _update_zone_label():
 def _update_battery_labels():
     """Read the battery monitor and refresh batt_label and batt_clean_label.
 
-    Called once per minute from the main loop.  Both labels are updated
-    regardless of their current visibility — _update_zone_label() controls
-    whether each label is shown; this function only sets the text.
+    Called once per minute from the main loop.  Checks for hibernation and
+    wakes the chip if needed — the MAX17048 can re-enter hibernation after
+    boot (e.g. when fully charged and idle), causing stale readings.
+    Both labels are updated regardless of visibility; _update_zone_label()
+    controls whether each label is shown.
 
     If the battery read fails, both labels show "BATT ?%" so the failure
     is visible rather than silently stale.
@@ -755,6 +758,11 @@ def _update_battery_labels():
     if not battery_monitor:
         return
     try:
+        # Wake the chip if it has re-entered hibernation since boot.
+        # Hibernation causes cell_percent to return a stale value.
+        if battery_monitor.hibernating:
+            battery_monitor.wake()
+            time.sleep(0.1)   # brief settle time for fresh reading
         pct      = int(battery_monitor.cell_percent)
         batt_str = "BATT {}%".format(pct)
     except Exception:
@@ -766,18 +774,20 @@ def _update_battery_labels():
 # Date display helper
 # ---------------------------------------------------------------------------
 def _current_date_str():
-    """Return the current date as "MON  2026-03-30" using the software clock.
+    """Return the current local date as "2026-03-30  MON" using the software clock.
 
-    Derives the current UTC date from sync_unix_secs plus elapsed seconds
-    since the last NTP sync, then applies webb_ntp.unix_to_date() to get
-    year/month/day/weekday.  Handles date rollover automatically — no
-    separate midnight detection is needed.
+    Derives the current date from sync_unix_secs plus elapsed seconds since
+    the last NTP sync, applying the active timezone offset so the date rolls
+    over at local midnight rather than UTC midnight.  Handles date rollover
+    automatically — no separate midnight detection is needed.
     """
     elapsed_s        = (time.monotonic_ns() - sync_mono_ns) // 1_000_000_000
-    current_unix     = sync_unix_secs + elapsed_s
-    y, m, d, weekday = webb_ntp.unix_to_date(current_unix)
-    return "{}  {:04d}-{:02d}-{:02d}".format(
-        webb_ntp.DAYS_SHORT[weekday], y, m, d)
+    # Add timezone offset (in minutes, converted to seconds) so the date
+    # reflects local time rather than UTC.
+    local_unix       = sync_unix_secs + elapsed_s + TIMEZONES[tz_index][0] * 60
+    y, m, d, weekday = webb_ntp.unix_to_date(local_unix)
+    return "{:04d}-{:02d}-{:02d}  {}".format(
+        y, m, d, webb_ntp.DAYS_SHORT[weekday])
 
 # ---------------------------------------------------------------------------
 # Debug helper
@@ -1308,17 +1318,24 @@ last_battery_minute  = -1   # tracks the last minute a battery reading was taken
 # ---------------------------------------------------------------------------
 # Battery saver state
 #
-# When running on battery only (no USB), the display dims to minimum
-# brightness after BATTERY_SAVER_TIMEOUT seconds of button inactivity.
+# When on battery only (not charging), the display dims to minimum brightness
+# after BATTERY_SAVER_TIMEOUT seconds of button inactivity.
 # Any button press restores full brightness and resets the idle timer.
 # BATTERY_SAVER_TIMEOUT = 0 disables the feature entirely.
-# supervisor.runtime.usb_connected is checked each loop tick so the
-# feature activates/deactivates automatically as USB is plugged/unplugged.
+#
+# Charging detection uses the MAX17048 charge_rate property with hysteresis:
+#   charge_rate >  0.5 %/hr → charging   → suppress battery saver
+#   charge_rate < -0.5 %/hr → discharging → allow battery saver
+#   between -0.5 and +0.5   → hold current state (dead band)
+# This avoids false triggering near full charge where rate is near zero,
+# and correctly identifies wall chargers (no USB data) as external power.
+# Falls back to supervisor.runtime.usb_connected if no battery monitor.
 # ---------------------------------------------------------------------------
 battery_saver_active    = False  # True while display is dimmed for battery saving
 batt_saver_last_active  = time.monotonic()  # monotonic time of last button activity
 _batt_saver_just_woke   = False  # True for one loop tick after waking from battery saver;
                                   # suppresses the waking button's normal action
+_on_external_power      = True   # assume external power at boot; only cleared when discharge is confirmed
 
 # ---------------------------------------------------------------------------
 # Main loop
@@ -1329,18 +1346,24 @@ while True:
 
     # --- Battery saver mode -------------------------------------------------
     # Dims display to minimum brightness after BATTERY_SAVER_TIMEOUT seconds
-    # of inactivity when running on battery only (no USB power detected).
-    # Any button press wakes the display and resets the idle timer.
-    if BATTERY_SAVER_TIMEOUT > 0 and not supervisor.runtime.usb_connected:
-        if not battery_saver_active:
-            if mono - batt_saver_last_active >= BATTERY_SAVER_TIMEOUT:
-                display.brightness = BRIGHTNESS_LEVELS[0]  # dim to minimum
-                battery_saver_active = True
-    elif battery_saver_active:
-        # USB reconnected — exit battery saver immediately
-        display.brightness = BRIGHTNESS_LEVELS[brightness_index]
-        battery_saver_active   = False
-        batt_saver_last_active = mono
+    # of inactivity when not on external power.
+    # External power detection uses MAX17048 charge_rate with ±0.5%/hr hysteresis
+    # so wall chargers (no USB data) are correctly identified as external power.
+    # Falls back to supervisor.runtime.usb_connected if no battery monitor.
+    if BATTERY_SAVER_TIMEOUT > 0:
+        # Battery saver activates only when not on external power.
+        # _on_external_power is updated once per minute in the battery
+        # update block to avoid noisy per-tick charge_rate readings.
+        if not _on_external_power:
+            if not battery_saver_active:
+                if mono - batt_saver_last_active >= BATTERY_SAVER_TIMEOUT:
+                    display.brightness = BRIGHTNESS_LEVELS[0]  # dim to minimum
+                    battery_saver_active = True
+        elif battery_saver_active:
+            # External power detected — exit battery saver immediately
+            display.brightness     = BRIGHTNESS_LEVELS[brightness_index]
+            battery_saver_active   = False
+            batt_saver_last_active = mono
 
     # --- Periodic NTP sync with backoff on failure --------------------------
     if sync_ntp_enabled and mono >= next_ntp_try:
@@ -1438,6 +1461,33 @@ while True:
                 _update_battery_labels()
                 if not tz_edit_active:   # don't stomp edit mode label
                     _update_zone_label()
+                # Update external power state once per minute using charge_rate.
+                # USB data connection always overrides — wall charger detection
+                # uses a trimmed mean of 5 samples (0.1s apart) with the high
+                # and low discarded, then hysteresis: >+0.5 = charging, <-0.5 = discharging.
+                if supervisor.runtime.usb_connected:
+                    _on_external_power = True
+                elif battery_monitor:
+                    try:
+                        # Collect 5 charge_rate samples spaced 0.1s apart
+                        _cr_samples = []
+                        for _ in range(5):
+                            _cr_samples.append(battery_monitor.charge_rate)
+                            time.sleep(0.1)
+                        # Trimmed mean: discard highest and lowest, average the rest
+                        _cr_samples.sort()
+                        rate = sum(_cr_samples[1:-1]) / len(_cr_samples[1:-1])
+                        if rate > 0.5:
+                            _on_external_power = True    # wall charger, actively charging
+                        elif rate < -0.5 and battery_monitor.cell_percent < 95:
+                            # Discharging AND below 95% — genuinely on battery.
+                            # The cell_percent guard prevents false triggers when
+                            # a fully-charged battery on a wall charger briefly
+                            # shows a small negative rate.
+                            _on_external_power = False
+                        # else: dead band, or discharging but ≥95% — hold current state
+                    except Exception:
+                        pass   # hold current state on read error
 
     # --- D0: hold = info screen, quick press = color cycle or dismiss --------
     # Pull.UP: resting state True (HIGH), pressed False (LOW)
