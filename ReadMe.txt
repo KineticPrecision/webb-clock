@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.23
+ webb-clock  v1.24
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -150,10 +150,14 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
 
   Clean mode (default on boot):
     Large 7-segment HH:MM:SS digits fill the upper portion of the screen.
-    If a battery is present, the timezone label is left-justified and the
+    If a battery is detected, the timezone label is left-justified and the
     battery percentage is right-justified in the row below the digits.
     Without a battery, the timezone label fills the full width at larger
     size.  Press D2 to cycle to Date or Status mode.
+    Note: the battery monitor chip on the Feather is powered from the board
+    regulator rather than the battery connector.  It will report plausible
+    values even with no battery physically installed.  The battery display
+    is only meaningful when a battery is connected.
 
   Date mode (D2 short press from Clean):
     The row below the digits shows the current date as "2026-03-30  MON"
@@ -284,6 +288,27 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   (adapted) interval is shown on the System Info screen alongside it.
   The fuzz (NTP_SYNC_FUZZ_PCT) is applied as a percentage of the
   current adaptive interval so it remains proportionate at all times.
+
+
+--------------------------------------------------------------------------------
+ BATTERY LIFE
+--------------------------------------------------------------------------------
+
+  Battery life varies depending on sync mode, battery capacity, and ambient
+  temperature.  Testing was conducted on Adafruit ESP32-S3 Reverse TFT
+  Feather units with battery saver mode enabled and the adaptive sync
+  interval at or near its 3-hour ceiling.
+
+  With a fully charged 2000-2200 mAh battery, expect approximately 22-24
+  hours of runtime regardless of whether NTP sync is enabled or disabled.
+  This is because the adaptive interval extends the time between WiFi syncs
+  to up to 3 hours, making the display backlight the dominant power consumer
+  rather than WiFi activity.
+
+  In battery saver mode the display is dimmed to minimum brightness.  Any
+  operation that increases display brightness — such as button presses that
+  wake the display or manual brightness adjustment — will reduce battery
+  life accordingly.
 
 
 --------------------------------------------------------------------------------

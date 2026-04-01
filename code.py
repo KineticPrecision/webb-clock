@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.23  (2026-03-25)
+# Version : 1.24  (2026-04-01)
 # Author  : Spencer Webb
 # Developed with : Claude Sonnet 4.6 (Anthropic)
 # License : MIT
@@ -127,6 +127,11 @@ import wifi
 
 # Third-party / project
 import adafruit_max1704x
+try:
+    import adafruit_lc709203f
+    _have_lc709203f = True
+except ImportError:
+    _have_lc709203f = False
 import webb_ntp
 from adafruit_display_text import label
 
@@ -136,7 +141,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.23"   # shown on the info screen
+VERSION = "1.24"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -758,9 +763,10 @@ def _update_battery_labels():
     if not battery_monitor:
         return
     try:
-        # Wake the chip if it has re-entered hibernation since boot.
-        # Hibernation causes cell_percent to return a stale value.
-        if battery_monitor.hibernating:
+        # MAX17048 only: wake from hibernation if needed.
+        # The chip can re-enter hibernation after boot, causing stale readings.
+        # LC709203F does not have hibernation mode.
+        if _battery_type == "max17048" and battery_monitor.hibernating:
             battery_monitor.wake()
             time.sleep(0.1)   # brief settle time for fresh reading
         pct      = int(battery_monitor.cell_percent)
@@ -994,8 +1000,9 @@ def show_info_screen(mono):
 
     if battery_monitor:
         try:
-            batt_str = "{:.2f}V  {:.0f}%".format(
-                battery_monitor.cell_voltage, battery_monitor.cell_percent)
+            batt_str = "{:.2f}V  {:.0f}%  [{}]".format(
+                battery_monitor.cell_voltage, battery_monitor.cell_percent,
+                _battery_type)
         except Exception:
             batt_str = "Read error"
     else:
@@ -1082,27 +1089,47 @@ except Exception as e:
 pool = socketpool.SocketPool(wifi.radio)
 
 # ---------------------------------------------------------------------------
-# Battery monitor (MAX17048, I2C address 0x36)
-# Note: adafruit_max1704x is imported at the top of this file, so if the
-# library is absent from /lib the program will fail at import, not here.
-# This try/except only guards against hardware absence (no battery attached).
+# Battery monitor — auto-detect MAX17048 (0x36) or LC709203F (0x0B).
+# Both chips provide cell_voltage and cell_percent over I2C.
+# MAX17048 additionally provides charge_rate and hibernating.
+# LC709203F does not — those calls are gated on _battery_type.
+#
+# NOTE: On the Feather the battery monitor chip is powered from the board
+# regulator, not the battery JST connector.  It will respond on I2C and
+# report plausible-looking values even with no battery physically connected.
+# The battery display is only meaningful when a battery is installed.
 # ---------------------------------------------------------------------------
+battery_monitor = None
+_battery_type   = None   # "max17048" or "lc709203f"
+
 try:
     battery_monitor = adafruit_max1704x.MAX17048(board.I2C())
+    _battery_type   = "max17048"
+    _dbg("Battery monitor: MAX17048")
 except Exception:
-    battery_monitor = None
+    pass
 
-if battery_monitor:
-    # The MAX17048 enters hibernation mode when the battery has been sitting
-    # at rest, causing cell_percent to read 0% on the first query.  Calling
-    # wake() forces the chip out of hibernation and triggers a fresh reading.
-    # A short delay gives the chip time to complete its first measurement
-    # before we read it.
+if battery_monitor is None and _have_lc709203f:
     try:
-        battery_monitor.wake()
-        time.sleep(0.5)
+        battery_monitor = adafruit_lc709203f.LC709203F(board.I2C())
+        _battery_type   = "lc709203f"
+        _dbg("Battery monitor: LC709203F")
     except Exception:
         pass
+
+if battery_monitor is None:
+    _dbg("Battery monitor: not found")
+
+if battery_monitor:
+    # MAX17048 only: wake from hibernation before first read.
+    # The chip enters hibernation at rest, causing cell_percent to read 0%.
+    # A short delay gives the chip time to complete its first measurement.
+    if _battery_type == "max17048":
+        try:
+            battery_monitor.wake()
+            time.sleep(0.5)
+        except Exception:
+            pass
     _update_battery_labels()
     batt_label.hidden = not info_visible   # respect default display mode
 
@@ -1467,7 +1494,9 @@ while True:
                 # and low discarded, then hysteresis: >+0.5 = charging, <-0.5 = discharging.
                 if supervisor.runtime.usb_connected:
                     _on_external_power = True
-                elif battery_monitor:
+                elif battery_monitor and _battery_type == "max17048":
+                    # charge_rate is MAX17048-only — LC709203F falls through
+                    # to hold current state, relying on the boot-time True default.
                     try:
                         # Collect 5 charge_rate samples spaced 0.1s apart
                         _cr_samples = []
