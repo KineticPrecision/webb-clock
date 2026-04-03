@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.24
+ webb-clock  v1.25
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -35,11 +35,13 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
 
   lib/
       Required third-party CircuitPython libraries.  Copy the entire lib
-      folder to the root of the CIRCUITPY drive.  The following libraries
-      must be present:
+      folder to the root of the CIRCUITPY drive.  The following libraries must be present:
         - adafruit_display_text
-        - adafruit_max1704x  (battery monitor; required for battery level
-                              display, safe to omit if no battery is used)
+        - adafruit_max1704x   (battery monitor; for boards with MAX17048)
+        - adafruit_lc709203f  (battery monitor; for boards with LC709203F)
+      Both battery monitor libraries are optional — the clock auto-detects
+      which chip is present.  Boards ship with one or the other depending
+      on production date; safe to include both and let the software decide.
 
   settings.toml
       User configuration file.  Must be edited before first use.
@@ -112,15 +114,12 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       UTC+5:30), set the nearest whole hour here and fine-tune at runtime
       with the D1 button.  Default: 0 (UTC).
 
-  BATTERY_SAVER_TIMEOUT
-      When running on battery (not charging), the display dims to minimum
-      brightness after this many seconds of button inactivity.  Any button
-      press restores full brightness and resets the timer.  External power
-      is detected using a trimmed mean of the battery charge rate with
-      hysteresis (±0.5%/hr dead band), combined with a cell_percent < 95
-      guard to avoid false triggers on a fully-charged unit.  USB data
-      connections always suppress battery saver regardless of charge rate.
-      Set to 0 to disable.  Default: 60.
+  BATTERY_INSTALLED
+      Set to 0 when running without a battery (e.g. permanent USB or wall
+      power).  Suppresses the battery percentage display entirely, since
+      the battery monitor chip on the Feather is board-powered and reports
+      plausible but meaningless values when no battery is connected.
+      Default: 1 (battery present).
 
   DEBUG
       Set to 1 to enable timestamped verbose output on the serial console.
@@ -164,12 +163,12 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
     at scale 2, centered.  The date follows the active color scheme and
     rolls over at local midnight automatically.
 
-  Normal mode (status bar visible, D2 short press to enable):
+  Status mode (D2 short press cycle):
     Below the digits, a single line shows the current timezone and the
     result of the last NTP sync attempt:
       "UTC-5  NTP SYNC OK  14:23:05"
       "UTC-5  NTP SYNC FAIL  (OK 14:23:05)"
-      "UTC-5  SYNC OFF"  (when NTP sync is disabled via D1)
+      "UTC-5  SYNC OFF"  (when in Low Power Mode)
     The bottom status bar shows the time until the next sync on the left,
     the battery level in the centre (if a battery is present), and the
     last NTP round-trip (ping) time on the right.  The battery level is
@@ -181,10 +180,13 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
     The zone label area shows the current brightness level as a percentage.
     Short presses cycle through the five available levels.
 
-  Battery saver mode (automatic, battery only):
-    After BATTERY_SAVER_TIMEOUT seconds of button inactivity on battery
-    power, the display dims silently to minimum brightness.  Any button
-    press restores full brightness and resets the idle timer.
+  Low Power Mode (D1 short press):
+    WiFi is disabled and NTP sync is suspended.  The display remains at
+    user-selected brightness for 5 seconds, then dims to minimum.
+    Any button press in Low Power Mode restores brightness for 5 seconds
+    and executes the button's normal function.  The clock continues
+    running on the software clock.  The colons change color as an
+    indicator.  Press D1 again to return to Normal Mode.
 
   Error mode:
     If WiFi or NTP fails, the clock digits dim and a bright red error
@@ -214,12 +216,17 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
       Dismisses the info screen and returns to the clock.
 
   D1  (short press)
-      Toggles NTP sync on and off.  When sync is off, WiFi is disabled
-      to conserve battery power.  The clock continues running normally
-      on the software clock.  The colons change to the next color in
-      the color scheme rotation to indicate sync is off.  Press D1
-      again to re-enable WiFi and resume syncing — the seconds digits
-      briefly show dashes while reconnecting, then resume normally.
+      Toggles Low Power Mode on and off.  When entering Low Power Mode,
+      WiFi is disabled and NTP sync is suspended.  The display stays at
+      user-selected brightness for 5 seconds, then dims to minimum.
+      Any button press in Low Power Mode restores brightness for 5
+      seconds and executes its normal function.  The colons change to
+      the next color in the color scheme rotation as an indicator.
+      Pressing D1 again returns to Normal Mode — brightness restores,
+      WiFi reconnects, and an immediate NTP sync is performed (seconds
+      digits briefly show dashes while reconnecting).
+      Tip: pressing D1 twice (activate Low Power Mode, then return to
+      Normal Mode) forces an immediate NTP sync at any time.
 
   D1  (hold 0.5s)
       Enters timezone edit mode.  The timezone label turns white to
@@ -296,8 +303,9 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
 
   Battery life varies depending on sync mode, battery capacity, and ambient
   temperature.  Testing was conducted on Adafruit ESP32-S3 Reverse TFT
-  Feather units with battery saver mode enabled and the adaptive sync
-  interval at or near its 3-hour ceiling.
+  Feather units in Normal Mode with the adaptive sync interval at or near
+  its 3-hour ceiling.  Low Power Mode (D1 short press) disables WiFi
+  entirely and dims the display, extending runtime significantly.
 
   With a fully charged 2000-2200 mAh battery, expect approximately 22-24
   hours of runtime regardless of whether NTP sync is enabled or disabled.
@@ -305,10 +313,10 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
   to up to 3 hours, making the display backlight the dominant power consumer
   rather than WiFi activity.
 
-  In battery saver mode the display is dimmed to minimum brightness.  Any
-  operation that increases display brightness — such as button presses that
-  wake the display or manual brightness adjustment — will reduce battery
-  life accordingly.
+  In Low Power Mode the display is dimmed to minimum brightness.  Any
+  operation that increases display brightness — such as activating Normal
+  Mode or manual brightness adjustment — will reduce battery life
+  accordingly.
 
 
 --------------------------------------------------------------------------------

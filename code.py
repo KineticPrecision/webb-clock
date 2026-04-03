@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.24  (2026-04-01)
+# Version : 1.25  (2026-04-03)
 # Author  : Spencer Webb
 # Developed with : Claude Sonnet 4.6 (Anthropic)
 # License : MIT
@@ -86,7 +86,12 @@
 #   D0 short press  — cycle display color (Green / Red / Blue)
 #   D0 hold 0.5s    — show system info screen (stays on after release)
 #   D0 short press  — dismiss info screen and return to clock
-#   D1 short press  — toggle NTP sync on/off (colons change color when sync off)
+#   D1 short press  — toggle Low Power Mode on/off
+#                      Low Power: WiFi off, NTP sync off; display stays bright
+#                                 for 5s then dims; any button press restores
+#                                 brightness for 5s; colons change color
+#                      Normal:    display restores, WiFi reconnects, NTP syncs
+#                      Tip: press D1 twice to force an immediate NTP sync
 #   D1 hold 0.5s    — enter timezone edit mode (zone label turns white)
 #     D1 short press  — step to next timezone
 #     D1 hold 0.5s    — exit timezone edit mode
@@ -98,10 +103,9 @@
 #   D2 hold 0.5s    — enter brightness adjustment mode
 #     D2 short press  — cycle through brightness levels (5/10/25/50/100%)
 #     D2 hold 0.5s    — exit brightness adjustment, restore prior display state
-#   Any button       — wake from battery saver mode (if active)
 #
 # Required libraries in /lib on CIRCUITPY:
-#   adafruit_display_text, adafruit_max1704x
+#   adafruit_display_text, adafruit_max1704x, adafruit_lc709203f
 #
 # Project modules at root level on CIRCUITPY (alongside code.py):
 #   webb_ntp.py
@@ -121,7 +125,6 @@ import board
 import digitalio
 import displayio
 import socketpool
-import supervisor
 import terminalio
 import wifi
 
@@ -141,7 +144,7 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.24"   # shown on the info screen
+VERSION = "1.25"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
@@ -185,7 +188,7 @@ NTP_INTERVAL_MAX    = 10800  # 3 hours
 TIME_FORMAT             = int(os.getenv("TIME_FORMAT",             "24"))   # 12 or 24
 DEBUG                   = int(os.getenv("DEBUG",                   "0"))    # 1 = verbose serial output
 BRIGHTNESS              = float(os.getenv("BRIGHTNESS",            "1.0"))  # backlight level 0.0-1.0
-BATTERY_SAVER_TIMEOUT   = int(os.getenv("BATTERY_SAVER_TIMEOUT",  "60"))   # seconds idle on battery before dimming; 0=disabled
+BATTERY_INSTALLED       = int(os.getenv("BATTERY_INSTALLED",       "1"))    # set to 0 to suppress battery display (no battery connected)
 INFO_BRIGHTNESS         = float(os.getenv("INFO_BRIGHTNESS",       "1.0"))  # status bar text 0.0-1.0
 DEFAULT_TZ_OFFSET       = int(os.getenv("DEFAULT_TZ_OFFSET",       "0")) * 60  # hours -> minutes
 
@@ -543,6 +546,7 @@ btn_d2.switch_to_input(pull=digitalio.Pull.DOWN)
 
 HOLD_THRESHOLD     = 0.5   # seconds a button must be held to trigger hold action
 TZ_EDIT_TIMEOUT    = 30    # seconds of D1 inactivity before auto-exiting timezone edit mode
+LPM_WAKE_DURATION  = 5     # seconds display stays bright after a button press in Low Power Mode
 
 # D0 state
 info_screen_active = False  # True while the full-screen info overlay is shown
@@ -922,30 +926,37 @@ def _apply_brightness():
 # NTP sync toggle helpers
 # ---------------------------------------------------------------------------
 def _enter_sync_off():
-    """Disable WiFi and suspend NTP syncing.
+    """Enter Low Power Mode: dim display, disable WiFi, suspend NTP sync.
 
-    Colons are redrawn with palette[3] (next color in rotation) so the
-    display gives a clear visual indication that sync is off.
+    The display dims to minimum brightness and colons are redrawn with
+    palette[3] (next color in rotation) as a visual indicator.
     The software clock continues running normally on the last good fix.
+    Triggered by D1 short press.
     """
-    global sync_ntp_enabled
-    sync_ntp_enabled = False
+    global sync_ntp_enabled, _lpm_wake_time
+    sync_ntp_enabled   = False
     wifi.radio.enabled = False
-    # Redraw colons with sync-off color (palette index 3)
+    # Start the 5-second wake timer — display stays at user brightness
+    # briefly, then the main loop dims it after LPM_WAKE_DURATION seconds.
+    _lpm_wake_time = time.monotonic()
+    # Redraw colons with Low Power Mode color (palette index 3)
     _draw_colon(COLON_X[0], TOP, 3)
     _draw_colon(COLON_X[1], TOP, 3)
-    _dbg("Sync OFF — WiFi disabled")
+    _dbg("Low Power Mode ON — WiFi disabled, display will dim in {}s".format(LPM_WAKE_DURATION))
     _update_zone_label()
 
 def _exit_sync_off():
-    """Re-enable WiFi, reconnect, and resume NTP syncing.
+    """Exit Low Power Mode: restore display, re-enable WiFi, resume NTP sync.
 
-    Seconds digits show dashes during the blocking WiFi reconnect so the
-    user can see something is happening.  After reconnecting the socket
-    pool is recreated, the DNS cache is cleared, and an immediate NTP sync
-    is scheduled.
+    Display brightness is restored to the user-selected level.  Seconds
+    digits show dashes during the blocking WiFi reconnect so the user can
+    see something is happening.  After reconnecting the socket pool is
+    recreated, the DNS cache is cleared, and an immediate NTP sync is
+    scheduled.  Triggered by D1 short press.
     """
     global sync_ntp_enabled, pool, next_ntp_try
+    # Restore display brightness to user-selected level
+    display.brightness = BRIGHTNESS_LEVELS[brightness_index]
     # Show dashes in seconds slots while reconnecting
     _draw_digit(10, DIGIT_X[4], TOP)
     _draw_digit(10, DIGIT_X[5], TOP)
@@ -954,7 +965,7 @@ def _exit_sync_off():
     # Restore colons to normal color before reconnect
     _draw_colon(COLON_X[0], TOP, 1)
     _draw_colon(COLON_X[1], TOP, 1)
-    _dbg("Sync ON — reconnecting WiFi...")
+    _dbg("Low Power Mode OFF — reconnecting WiFi...")
     try:
         wifi.radio.enabled = True
         wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
@@ -1071,7 +1082,8 @@ _dbg("Adapt threshold: {}ms  band: {}%  step: {}%  min: {}s  max: {}s".format(
     NTP_ADAPT_THRESHOLD, NTP_ADAPT_BAND, round(NTP_ADAPT_STEP * 100),
     NTP_INTERVAL_MIN, NTP_INTERVAL_MAX))
 _dbg("NTP fallback: {}  after {} failures".format(NTP_SERVER_FALLBACK, NTP_FALLBACK_AFTER))
-_dbg("Battery saver: {}s timeout  (0=disabled)".format(BATTERY_SAVER_TIMEOUT))
+_dbg("Battery installed: {}  Low Power Mode: D1 short press".format(
+    "yes" if BATTERY_INSTALLED else "no (display suppressed)"))
 _dbg("Connecting to WiFi: {}".format(WIFI_SSID))
 try:
     wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
@@ -1102,23 +1114,26 @@ pool = socketpool.SocketPool(wifi.radio)
 battery_monitor = None
 _battery_type   = None   # "max17048" or "lc709203f"
 
-try:
-    battery_monitor = adafruit_max1704x.MAX17048(board.I2C())
-    _battery_type   = "max17048"
-    _dbg("Battery monitor: MAX17048")
-except Exception:
-    pass
-
-if battery_monitor is None and _have_lc709203f:
+if not BATTERY_INSTALLED:
+    _dbg("Battery monitor: disabled (BATTERY_INSTALLED=0)")
+else:
     try:
-        battery_monitor = adafruit_lc709203f.LC709203F(board.I2C())
-        _battery_type   = "lc709203f"
-        _dbg("Battery monitor: LC709203F")
+        battery_monitor = adafruit_max1704x.MAX17048(board.I2C())
+        _battery_type   = "max17048"
+        _dbg("Battery monitor: MAX17048")
     except Exception:
         pass
 
-if battery_monitor is None:
-    _dbg("Battery monitor: not found")
+    if battery_monitor is None and _have_lc709203f:
+        try:
+            battery_monitor = adafruit_lc709203f.LC709203F(board.I2C())
+            _battery_type   = "lc709203f"
+            _dbg("Battery monitor: LC709203F")
+        except Exception:
+            pass
+
+    if battery_monitor is None:
+        _dbg("Battery monitor: not found")
 
 if battery_monitor:
     # MAX17048 only: wake from hibernation before first read.
@@ -1341,28 +1356,9 @@ if DEBUG:
 
 last_second          = -1
 last_battery_minute  = -1   # tracks the last minute a battery reading was taken
+_lpm_wake_time       = None  # monotonic time of last button press in Low Power Mode;
+                              # None when not in Low Power Mode or display is already dim
 
-# ---------------------------------------------------------------------------
-# Battery saver state
-#
-# When on battery only (not charging), the display dims to minimum brightness
-# after BATTERY_SAVER_TIMEOUT seconds of button inactivity.
-# Any button press restores full brightness and resets the idle timer.
-# BATTERY_SAVER_TIMEOUT = 0 disables the feature entirely.
-#
-# Charging detection uses the MAX17048 charge_rate property with hysteresis:
-#   charge_rate >  0.5 %/hr → charging   → suppress battery saver
-#   charge_rate < -0.5 %/hr → discharging → allow battery saver
-#   between -0.5 and +0.5   → hold current state (dead band)
-# This avoids false triggering near full charge where rate is near zero,
-# and correctly identifies wall chargers (no USB data) as external power.
-# Falls back to supervisor.runtime.usb_connected if no battery monitor.
-# ---------------------------------------------------------------------------
-battery_saver_active    = False  # True while display is dimmed for battery saving
-batt_saver_last_active  = time.monotonic()  # monotonic time of last button activity
-_batt_saver_just_woke   = False  # True for one loop tick after waking from battery saver;
-                                  # suppresses the waking button's normal action
-_on_external_power      = True   # assume external power at boot; only cleared when discharge is confirmed
 
 # ---------------------------------------------------------------------------
 # Main loop
@@ -1371,26 +1367,13 @@ while True:
     mono    = time.monotonic()      # float — used for scheduling and button timing
     mono_ns = time.monotonic_ns()   # integer — used for sub-second clock display
 
-    # --- Battery saver mode -------------------------------------------------
-    # Dims display to minimum brightness after BATTERY_SAVER_TIMEOUT seconds
-    # of inactivity when not on external power.
-    # External power detection uses MAX17048 charge_rate with ±0.5%/hr hysteresis
-    # so wall chargers (no USB data) are correctly identified as external power.
-    # Falls back to supervisor.runtime.usb_connected if no battery monitor.
-    if BATTERY_SAVER_TIMEOUT > 0:
-        # Battery saver activates only when not on external power.
-        # _on_external_power is updated once per minute in the battery
-        # update block to avoid noisy per-tick charge_rate readings.
-        if not _on_external_power:
-            if not battery_saver_active:
-                if mono - batt_saver_last_active >= BATTERY_SAVER_TIMEOUT:
-                    display.brightness = BRIGHTNESS_LEVELS[0]  # dim to minimum
-                    battery_saver_active = True
-        elif battery_saver_active:
-            # External power detected — exit battery saver immediately
-            display.brightness     = BRIGHTNESS_LEVELS[brightness_index]
-            battery_saver_active   = False
-            batt_saver_last_active = mono
+    # --- Low Power Mode brightness timer -----------------------------------
+    # In Low Power Mode a button press temporarily restores user brightness.
+    # After LPM_WAKE_DURATION seconds of inactivity, dim back to minimum.
+    if not sync_ntp_enabled and _lpm_wake_time is not None:
+        if mono - _lpm_wake_time >= LPM_WAKE_DURATION:
+            display.brightness = BRIGHTNESS_LEVELS[0]   # dim back to minimum
+            _lpm_wake_time     = None
 
     # --- Periodic NTP sync with backoff on failure --------------------------
     if sync_ntp_enabled and mono >= next_ntp_try:
@@ -1488,35 +1471,6 @@ while True:
                 _update_battery_labels()
                 if not tz_edit_active:   # don't stomp edit mode label
                     _update_zone_label()
-                # Update external power state once per minute using charge_rate.
-                # USB data connection always overrides — wall charger detection
-                # uses a trimmed mean of 5 samples (0.1s apart) with the high
-                # and low discarded, then hysteresis: >+0.5 = charging, <-0.5 = discharging.
-                if supervisor.runtime.usb_connected:
-                    _on_external_power = True
-                elif battery_monitor and _battery_type == "max17048":
-                    # charge_rate is MAX17048-only — LC709203F falls through
-                    # to hold current state, relying on the boot-time True default.
-                    try:
-                        # Collect 5 charge_rate samples spaced 0.1s apart
-                        _cr_samples = []
-                        for _ in range(5):
-                            _cr_samples.append(battery_monitor.charge_rate)
-                            time.sleep(0.1)
-                        # Trimmed mean: discard highest and lowest, average the rest
-                        _cr_samples.sort()
-                        rate = sum(_cr_samples[1:-1]) / len(_cr_samples[1:-1])
-                        if rate > 0.5:
-                            _on_external_power = True    # wall charger, actively charging
-                        elif rate < -0.5 and battery_monitor.cell_percent < 95:
-                            # Discharging AND below 95% — genuinely on battery.
-                            # The cell_percent guard prevents false triggers when
-                            # a fully-charged battery on a wall charger briefly
-                            # shows a small negative rate.
-                            _on_external_power = False
-                        # else: dead band, or discharging but ≥95% — hold current state
-                    except Exception:
-                        pass   # hold current state on read error
 
     # --- D0: hold = info screen, quick press = color cycle or dismiss --------
     # Pull.UP: resting state True (HIGH), pressed False (LOW)
@@ -1528,13 +1482,10 @@ while True:
     btn_d0_now = btn_d0.value
     if not btn_d0_now and btn_d0_last:
         # Falling edge — D0 signal went HIGH→LOW, button just pressed; start hold timer
-        batt_saver_last_active = mono   # reset battery saver idle timer
-        if battery_saver_active:
-            display.brightness   = BRIGHTNESS_LEVELS[brightness_index]
-            battery_saver_active = False
-            btn_d0_held_since    = None   # leave held_since None so release fires no action
-        else:
-            btn_d0_held_since = mono
+        if not sync_ntp_enabled:   # in Low Power Mode — restore brightness
+            display.brightness = BRIGHTNESS_LEVELS[brightness_index]
+            _lpm_wake_time     = mono
+        btn_d0_held_since = mono
     elif not btn_d0_now and not btn_d0_last:
         # Still held — trigger info screen once hold threshold is reached
         if btn_d0_held_since is not None and not info_screen_active:
@@ -1554,12 +1505,12 @@ while True:
         btn_d0_held_since = None
     btn_d0_last = btn_d0_now
 
-    # --- D1: hold = enter/exit timezone edit, short press = step timezone ---
+    # --- D1: short press = Low Power Mode toggle, hold = timezone edit ------
     # Pull.DOWN: resting state False (LOW), pressed True (HIGH)
     #
     # State machine:
     #   Not in edit mode:
-    #     Short press  — ignored (prevents accidental timezone changes)
+    #     Short press  — toggle Low Power Mode (dim + sync off / normal + sync on)
     #     Hold 0.5s    — enter timezone edit mode (zone label turns white)
     #   In edit mode:
     #     Short press  — step to next timezone
@@ -1568,14 +1519,10 @@ while True:
     btn_d1_now = btn_d1.value
     if btn_d1_now and not btn_d1_last:
         # Rising edge — button just pressed; start hold timer
-        batt_saver_last_active = mono
-        if battery_saver_active:
-            display.brightness    = BRIGHTNESS_LEVELS[brightness_index]
-            battery_saver_active  = False
-            _batt_saver_just_woke = True
-        if not _batt_saver_just_woke:
-            btn_d1_held_since = mono
-        _batt_saver_just_woke = False
+        if not sync_ntp_enabled:   # in Low Power Mode — restore brightness
+            display.brightness = BRIGHTNESS_LEVELS[brightness_index]
+            _lpm_wake_time     = mono
+        btn_d1_held_since = mono
     elif btn_d1_now and btn_d1_last:
         # Still held — check for hold threshold
         if btn_d1_held_since is not None:
@@ -1621,13 +1568,10 @@ while True:
     btn_d2_now = btn_d2.value
     if btn_d2_now and not btn_d2_last:
         # Rising edge — D2 signal went LOW→HIGH (active high), button just pressed; start hold timer
-        batt_saver_last_active = mono   # reset battery saver idle timer
-        if battery_saver_active:
-            display.brightness   = BRIGHTNESS_LEVELS[brightness_index]
-            battery_saver_active = False
-            btn_d2_held_since    = None   # leave held_since None so release fires no action
-        else:
-            btn_d2_held_since = mono
+        if not sync_ntp_enabled:   # in Low Power Mode — restore brightness
+            display.brightness = BRIGHTNESS_LEVELS[brightness_index]
+            _lpm_wake_time     = mono
+        btn_d2_held_since = mono
     elif btn_d2_now and btn_d2_last:
         # Still held — trigger hold action once threshold is reached
         if btn_d2_held_since is not None:

@@ -39,11 +39,9 @@ DEBUG = "0"
 # by holding D2 and using short presses to cycle through five levels.
 BRIGHTNESS = "1.0"
 
-# Battery saver timeout in seconds (0 = disabled).
-# When running on battery only (no USB), the display dims to minimum
-# brightness after this many seconds of button inactivity.
-# Any button press restores brightness and resets the timer.
-BATTERY_SAVER_TIMEOUT = "60"
+# Set to 0 if no battery is connected, to suppress the battery display.
+# Default: 1 (battery present).
+BATTERY_INSTALLED = "1"
 
 # Brightness for the status bar text (Sync, Battery, Ping): 0.0 to 1.0
 INFO_BRIGHTNESS = "1.0"
@@ -52,5 +50,5 @@ INFO_BRIGHTNESS = "1.0"
 # Examples: 0=UTC, -5=UTC-5, 1=UTC+1, -3=UTC-3
 # Note: for fractional-hour zones (e.g. UTC+5:30) set the nearest whole hour
 # and use the D1 button to fine-tune at runtime.
-# D1 button steps through all zones at runtime.
+# Hold D1 to enter timezone edit mode, then short press to step through zones.
 DEFAULT_TZ_OFFSET = "0"
