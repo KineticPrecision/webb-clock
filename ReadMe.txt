@@ -1,5 +1,5 @@
 ================================================================================
- webb-clock  v1.25
+ webb-clock  v1.26
  Spencer Webb  |  webb@antennasys.com
 ================================================================================
 
@@ -68,7 +68,12 @@ and displayed as large 7-segment digits on the built-in 240x135 TFT display.
 --------------------------------------------------------------------------------
 
   WIFI_SSID / WIFI_PASSWORD
-      Your WiFi network credentials.  Required.
+      Your primary WiFi network credentials.  Required.
+
+  WIFI_SSID_FALLBACK / WIFI_PASSWORD_FALLBACK
+      Optional fallback WiFi network.  If the primary connection fails
+      at boot or when exiting Low Power Mode, the clock automatically
+      tries this network.  Omit if not needed.
 
   NTP_SERVER
       Hostname of the primary NTP server.  Defaults to "time.nist.gov",

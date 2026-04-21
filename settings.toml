@@ -3,9 +3,14 @@
 # Copy this file to the root of the CIRCUITPY drive.
 # Edit the values below to match your environment.
 
-# WiFi credentials
-WIFI_SSID     = "your_ssid_here"
-WIFI_PASSWORD = "your_password_here"
+# WiFi credentials (primary network)
+WIFI_SSID     = "webb-guest"
+WIFI_PASSWORD = "$p1derWebb"
+
+# Optional fallback WiFi network — used if primary connection fails.
+# Leave commented out if not needed.
+# WIFI_SSID_FALLBACK     = "your_fallback_ssid_here"
+# WIFI_PASSWORD_FALLBACK = "your_fallback_password_here"
 
 # ── The clock will run with only the above two lines filled in. ────────────
 # ── Everything below is optional and has sensible defaults.     ────────────
@@ -51,4 +56,4 @@ INFO_BRIGHTNESS = "1.0"
 # Note: for fractional-hour zones (e.g. UTC+5:30) set the nearest whole hour
 # and use the D1 button to fine-tune at runtime.
 # Hold D1 to enter timezone edit mode, then short press to step through zones.
-DEFAULT_TZ_OFFSET = "0"
+DEFAULT_TZ_OFFSET = "-4"

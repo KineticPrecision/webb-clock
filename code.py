@@ -2,7 +2,7 @@
 # NTP Clock
 # Adafruit ESP32-S3 Reverse TFT Feather
 #
-# Version : 1.25  (2026-04-03)
+# Version : 1.26  (2026-04-21)
 # Author  : Spencer Webb
 # Developed with : Claude Sonnet 4.6 (Anthropic)
 # License : MIT
@@ -144,13 +144,15 @@ from adafruit_display_text import label
 # ---------------------------------------------------------------------------
 boot_mono = time.monotonic()
 
-VERSION = "1.25"   # shown on the info screen
+VERSION = "1.26"   # shown on the info screen
 
 # ---------------------------------------------------------------------------
 # Configuration — all values come from settings.toml
 # ---------------------------------------------------------------------------
-WIFI_SSID         = os.getenv("WIFI_SSID")
-WIFI_PASSWORD     = os.getenv("WIFI_PASSWORD")
+WIFI_SSID          = os.getenv("WIFI_SSID")
+WIFI_PASSWORD      = os.getenv("WIFI_PASSWORD")
+WIFI_SSID_FALLBACK = os.getenv("WIFI_SSID_FALLBACK",  None)
+WIFI_PASS_FALLBACK = os.getenv("WIFI_PASSWORD_FALLBACK", None)
 NTP_SERVER          = os.getenv("NTP_SERVER",          "time.nist.gov")
 NTP_SERVER_FALLBACK = os.getenv("NTP_SERVER_FALLBACK", "pool.ntp.org")
 NTP_FALLBACK_AFTER  = 3    # switch to fallback after this many consecutive failures
@@ -547,15 +549,19 @@ btn_d2.switch_to_input(pull=digitalio.Pull.DOWN)
 HOLD_THRESHOLD     = 0.5   # seconds a button must be held to trigger hold action
 TZ_EDIT_TIMEOUT    = 30    # seconds of D1 inactivity before auto-exiting timezone edit mode
 LPM_WAKE_DURATION  = 5     # seconds display stays bright after a button press in Low Power Mode
+DEBOUNCE_TICKS     = 3     # consecutive stable readings required before registering an edge
+                           # at 50Hz (20ms/tick) this gives ~60ms debounce window
 
 # D0 state
 info_screen_active = False  # True while the full-screen info overlay is shown
 btn_d0_last        = True   # D0 rests HIGH (not pressed)
-btn_d0_held_since  = None  # monotonic time D0 was pressed, or None if not pressed
+btn_d0_held_since  = None   # monotonic time D0 was pressed, or None if not pressed
+btn_d0_stable      = 0      # consecutive ticks matching pending state (debounce counter)
 
 # D1 state
 btn_d1_last        = False
 btn_d1_held_since  = None   # monotonic time D1 was pressed, or None if not pressed
+btn_d1_stable      = 0      # consecutive ticks matching pending state (debounce counter)
 tz_edit_active     = False  # True while in timezone edit mode
 tz_edit_last_active= None   # monotonic time of last D1 activity in edit mode
 
@@ -571,6 +577,7 @@ info_visible_saved       = False  # info_visible saved on entering brightness ad
 date_mode_saved          = False  # date_mode saved on entering brightness adjust
 btn_d2_last            = False
 btn_d2_held_since      = None  # monotonic time D2 was pressed, or None if not pressed
+btn_d2_stable          = 0     # consecutive ticks matching pending state (debounce counter)
 
 # NTP sync enabled flag — toggled by D1 short press.
 # When False, WiFi is disabled and NTP scheduling is suspended.
@@ -968,7 +975,14 @@ def _exit_sync_off():
     _dbg("Low Power Mode OFF — reconnecting WiFi...")
     try:
         wifi.radio.enabled = True
-        wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
+        try:
+            wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
+        except Exception as e:
+            if WIFI_SSID_FALLBACK:
+                _dbg("Primary WiFi failed, trying fallback")
+                wifi.radio.connect(WIFI_SSID_FALLBACK, WIFI_PASS_FALLBACK)
+            else:
+                raise
         pool = socketpool.SocketPool(wifi.radio)
         webb_ntp._dns_cache = None   # clear cached DNS so server is re-resolved
         sync_ntp_enabled    = True
@@ -1089,9 +1103,20 @@ try:
     wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
     _dbg("WiFi connected  IP: {}".format(wifi.radio.ipv4_address))
 except Exception as e:
-    show_error("WiFi failed: " + str(e))
-    while True:
-        time.sleep(1)  # yield CPU — nothing can be done without network
+    _dbg("Primary WiFi failed: {}".format(e))
+    if WIFI_SSID_FALLBACK:
+        _dbg("Trying fallback WiFi: {}".format(WIFI_SSID_FALLBACK))
+        try:
+            wifi.radio.connect(WIFI_SSID_FALLBACK, WIFI_PASS_FALLBACK)
+            _dbg("WiFi connected (fallback)  IP: {}".format(wifi.radio.ipv4_address))
+        except Exception as e2:
+            show_error("WiFi failed: " + str(e2))
+            while True:
+                time.sleep(1)
+    else:
+        show_error("WiFi failed: " + str(e))
+        while True:
+            time.sleep(1)  # yield CPU — nothing can be done without network
 
 # ---------------------------------------------------------------------------
 # Socket pool — created once after WiFi connects and reused for all NTP syncs.
@@ -1479,31 +1504,36 @@ while True:
     #   Press & hold (>HOLD_THRESHOLD) -> info screen opens, stays after release
     #   Quick press while info screen showing -> dismiss, return to clock
     #   Quick press normally -> advance color scheme
-    btn_d0_now = btn_d0.value
-    if not btn_d0_now and btn_d0_last:
-        # Falling edge — D0 signal went HIGH→LOW, button just pressed; start hold timer
-        if not sync_ntp_enabled:   # in Low Power Mode — restore brightness
-            display.brightness = BRIGHTNESS_LEVELS[brightness_index]
-            _lpm_wake_time     = mono
-        btn_d0_held_since = mono
-    elif not btn_d0_now and not btn_d0_last:
-        # Still held — trigger info screen once hold threshold is reached
-        if btn_d0_held_since is not None and not info_screen_active:
-            if mono - btn_d0_held_since >= HOLD_THRESHOLD:
-                show_info_screen(mono)
-                btn_d0_held_since = None  # clear so release does nothing extra
-    elif btn_d0_now and not btn_d0_last:
-        # Rising edge — D0 signal went LOW→HIGH, button just released
-        if btn_d0_held_since is not None:
-            # held_since is set: released before hold threshold — treat as quick press
-            if info_screen_active:
-                hide_info_screen()
-            else:
-                color_scheme_index = (color_scheme_index + 1) % len(COLOR_SCHEMES)
-                apply_color_scheme()
-        # If held_since is None the hold already fired — do nothing on release
-        btn_d0_held_since = None
-    btn_d0_last = btn_d0_now
+    btn_d0_raw = btn_d0.value
+    if btn_d0_raw != btn_d0_last:
+        btn_d0_stable += 1
+        if btn_d0_stable >= DEBOUNCE_TICKS:
+            # Edge confirmed after DEBOUNCE_TICKS stable readings
+            btn_d0_now    = btn_d0_raw
+            btn_d0_stable = 0
+            if not btn_d0_now and btn_d0_last:
+                # Falling edge — button just pressed
+                if not sync_ntp_enabled:
+                    display.brightness = BRIGHTNESS_LEVELS[brightness_index]
+                    _lpm_wake_time     = mono
+                btn_d0_held_since = mono
+            elif btn_d0_now and not btn_d0_last:
+                # Rising edge — button just released
+                if btn_d0_held_since is not None:
+                    if info_screen_active:
+                        hide_info_screen()
+                    else:
+                        color_scheme_index = (color_scheme_index + 1) % len(COLOR_SCHEMES)
+                        apply_color_scheme()
+                btn_d0_held_since = None
+            btn_d0_last = btn_d0_now
+    else:
+        btn_d0_stable = 0   # reading matches last confirmed state — reset counter
+    # Still held — trigger info screen once hold threshold is reached
+    if not btn_d0_last and btn_d0_held_since is not None and not info_screen_active:
+        if mono - btn_d0_held_since >= HOLD_THRESHOLD:
+            show_info_screen(mono)
+            btn_d0_held_since = None
 
     # --- D1: short press = Low Power Mode toggle, hold = timezone edit ------
     # Pull.DOWN: resting state False (LOW), pressed True (HIGH)
@@ -1516,44 +1546,48 @@ while True:
     #     Short press  — step to next timezone
     #     Hold 0.5s    — exit timezone edit mode
     #     30s inactivity — exit timezone edit mode automatically
-    btn_d1_now = btn_d1.value
-    if btn_d1_now and not btn_d1_last:
-        # Rising edge — button just pressed; start hold timer
-        if not sync_ntp_enabled:   # in Low Power Mode — restore brightness
-            display.brightness = BRIGHTNESS_LEVELS[brightness_index]
-            _lpm_wake_time     = mono
-        btn_d1_held_since = mono
-    elif btn_d1_now and btn_d1_last:
-        # Still held — check for hold threshold
-        if btn_d1_held_since is not None:
-            if mono - btn_d1_held_since >= HOLD_THRESHOLD:
-                if tz_edit_active:
-                    _exit_tz_edit()     # hold while in edit = exit
-                else:
-                    _enter_tz_edit()    # hold normally = enter edit
-                btn_d1_held_since = None  # clear so release does nothing extra
-    elif not btn_d1_now and btn_d1_last:
-        # Falling edge — button just released
-        if btn_d1_held_since is not None:
-            # Released before hold threshold — treat as quick press
+    btn_d1_raw = btn_d1.value
+    if btn_d1_raw != btn_d1_last:
+        btn_d1_stable += 1
+        if btn_d1_stable >= DEBOUNCE_TICKS:
+            # Edge confirmed after DEBOUNCE_TICKS stable readings
+            btn_d1_now    = btn_d1_raw
+            btn_d1_stable = 0
+            if btn_d1_now and not btn_d1_last:
+                # Rising edge — button just pressed
+                if not sync_ntp_enabled:
+                    display.brightness = BRIGHTNESS_LEVELS[brightness_index]
+                    _lpm_wake_time     = mono
+                btn_d1_held_since = mono
+            elif not btn_d1_now and btn_d1_last:
+                # Falling edge — button just released
+                if btn_d1_held_since is not None:
+                    if tz_edit_active:
+                        tz_index            = (tz_index + 1) % len(TIMEZONES)
+                        last_second         = -1
+                        tz_edit_last_active = mono
+                        _update_zone_label()
+                    else:
+                        if sync_ntp_enabled:
+                            _enter_sync_off()
+                        else:
+                            _exit_sync_off()
+                btn_d1_held_since = None
+            btn_d1_last = btn_d1_now
+    else:
+        btn_d1_stable = 0
+    # Still held — check for hold threshold
+    if btn_d1_last and btn_d1_held_since is not None:
+        if mono - btn_d1_held_since >= HOLD_THRESHOLD:
             if tz_edit_active:
-                # Step timezone and reset inactivity timer
-                tz_index            = (tz_index + 1) % len(TIMEZONES)
-                last_second         = -1   # force immediate display refresh
-                tz_edit_last_active = mono
-                _update_zone_label()
+                _exit_tz_edit()
             else:
-                # Toggle NTP sync on/off
-                if sync_ntp_enabled:
-                    _enter_sync_off()
-                else:
-                    _exit_sync_off()
-        btn_d1_held_since = None
+                _enter_tz_edit()
+            btn_d1_held_since = None
     # --- Timezone edit mode inactivity timeout ----------------------------
     if tz_edit_active and tz_edit_last_active is not None:
         if mono - tz_edit_last_active >= TZ_EDIT_TIMEOUT:
             _exit_tz_edit()
-    btn_d1_last = btn_d1_now
 
     # --- D2: hold = brightness adjust, quick press = toggle status bar ------
     # Pull.DOWN: resting state False (LOW), pressed True (HIGH)
@@ -1565,48 +1599,50 @@ while True:
     #   In brightness adjust:
     #     Press & hold (>HOLD_THRESHOLD) -> exit brightness adjustment
     #     Quick press -> cycle to next brightness level
-    btn_d2_now = btn_d2.value
-    if btn_d2_now and not btn_d2_last:
-        # Rising edge — D2 signal went LOW→HIGH (active high), button just pressed; start hold timer
-        if not sync_ntp_enabled:   # in Low Power Mode — restore brightness
-            display.brightness = BRIGHTNESS_LEVELS[brightness_index]
-            _lpm_wake_time     = mono
-        btn_d2_held_since = mono
-    elif btn_d2_now and btn_d2_last:
-        # Still held — trigger hold action once threshold is reached
-        if btn_d2_held_since is not None:
-            if mono - btn_d2_held_since >= HOLD_THRESHOLD:
-                if brightness_adjust_active:
-                    _exit_brightness_adjust()   # hold while in adjust = exit
-                else:
-                    _enter_brightness_adjust()  # hold normally = enter adjust
-                btn_d2_held_since = None  # clear so release does nothing extra
-    elif not btn_d2_now and btn_d2_last:
-        # Falling edge — D2 signal went HIGH→LOW, button just released
-        if btn_d2_held_since is not None:
-            # held_since is set: released before hold threshold — treat as quick press
+    btn_d2_raw = btn_d2.value
+    if btn_d2_raw != btn_d2_last:
+        btn_d2_stable += 1
+        if btn_d2_stable >= DEBOUNCE_TICKS:
+            # Edge confirmed after DEBOUNCE_TICKS stable readings
+            btn_d2_now    = btn_d2_raw
+            btn_d2_stable = 0
+            if btn_d2_now and not btn_d2_last:
+                # Rising edge — button just pressed
+                if not sync_ntp_enabled:
+                    display.brightness = BRIGHTNESS_LEVELS[brightness_index]
+                    _lpm_wake_time     = mono
+                btn_d2_held_since = mono
+            elif not btn_d2_now and btn_d2_last:
+                # Falling edge — button just released
+                if btn_d2_held_since is not None:
+                    if brightness_adjust_active:
+                        brightness_index = (brightness_index + 1) % len(BRIGHTNESS_LEVELS)
+                        _apply_brightness()
+                    else:
+                        # Cycle: clean → date → status → clean
+                        if date_mode:
+                            date_mode    = False
+                            info_visible = True
+                        elif info_visible:
+                            info_visible = False
+                        else:
+                            date_mode = True
+                        sync_label.hidden = not info_visible
+                        ping_label.hidden = not info_visible
+                        if battery_monitor:
+                            batt_label.hidden = not info_visible
+                        _update_zone_label()
+                btn_d2_held_since = None
+            btn_d2_last = btn_d2_now
+    else:
+        btn_d2_stable = 0
+    # Still held — trigger hold action once threshold is reached
+    if btn_d2_last and btn_d2_held_since is not None:
+        if mono - btn_d2_held_since >= HOLD_THRESHOLD:
             if brightness_adjust_active:
-                brightness_index = (brightness_index + 1) % len(BRIGHTNESS_LEVELS)
-                _apply_brightness()             # cycle to next brightness level
+                _exit_brightness_adjust()
             else:
-                # Cycle: clean → date → status → clean
-                if date_mode:
-                    # date → status
-                    date_mode    = False
-                    info_visible = True
-                elif info_visible:
-                    # status → clean
-                    info_visible = False
-                else:
-                    # clean → date
-                    date_mode = True
-                sync_label.hidden = not info_visible
-                ping_label.hidden = not info_visible
-                if battery_monitor:
-                    batt_label.hidden = not info_visible
-                _update_zone_label()
-        # If held_since is None the hold already fired — do nothing on release
-        btn_d2_held_since = None
-    btn_d2_last = btn_d2_now
+                _enter_brightness_adjust()
+            btn_d2_held_since = None
 
     time.sleep(0.02)  # ~50 Hz — responsive to buttons, easy on the CPU
