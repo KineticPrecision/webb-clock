@@ -4,8 +4,8 @@
 # Edit the values below to match your environment.
 
 # WiFi credentials (primary network)
-WIFI_SSID     = "webb-guest"
-WIFI_PASSWORD = "$p1derWebb"
+WIFI_SSID     = "XXXXX"
+WIFI_PASSWORD = "XXXXX"
 
 # Optional fallback WiFi network — used if primary connection fails.
 # Leave commented out if not needed.
